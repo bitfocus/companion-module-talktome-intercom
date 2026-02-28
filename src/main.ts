@@ -1,0 +1,1504 @@
+import https from 'node:https'
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios'
+import { io, Socket } from 'socket.io-client'
+import { InstanceBase, InstanceStatus, Regex, combineRgb, runEntrypoint } from '@companion-module/base'
+import { getConfigFields } from './config'
+import { initActions as defineActions } from './actions'
+import { initFeedbacks as defineFeedbacks } from './feedbacks'
+import {
+	initVariableDefinitions as defineVariableDefinitions,
+	updateVariableValuesFromState as updateVariablesFromState,
+} from './variables'
+import { initPresets as definePresets } from './presets'
+import { UpgradeScripts } from './upgrades'
+import type {
+	AddressedEntry,
+	ChoiceItem,
+	CommandPayload,
+	CompanionError,
+	ConnectionState,
+	LastCommandState,
+	ModuleConfig,
+	NormalizedTarget,
+	PresetTarget,
+	ScopeMode,
+	UserState,
+} from './types'
+
+const PLACEHOLDER_USER_ID = -1
+const PLACEHOLDER_CONFERENCE_ID = -1
+const FIXED_HTTP_TIMEOUT_MS = 5000
+const FIXED_COMMAND_WAIT_MS = 1500
+
+const DEFAULT_CONFIG: ModuleConfig = {
+	host: 'localhost',
+	port: 443,
+	allowSelfSigned: true,
+	authMode: 'apiKey',
+	apiKey: '',
+	username: '',
+	password: '',
+}
+
+const WEB_COLORS = {
+	blue: combineRgb(37, 99, 235),
+	blueText: combineRgb(255, 255, 255),
+	purple: combineRgb(94, 12, 94),
+	purpleText: combineRgb(237, 233, 254),
+	green: combineRgb(34, 197, 94),
+	greenText: combineRgb(187, 247, 208),
+	offline: combineRgb(15, 23, 42),
+	offlineText: combineRgb(148, 163, 184),
+	baseTarget: combineRgb(50, 50, 50),
+}
+
+function clampNumber(rawValue: unknown, min: number, max: number, fallback: number): number {
+	const value = Number(rawValue)
+	if (!Number.isFinite(value)) return fallback
+	return Math.min(max, Math.max(min, Math.round(value)))
+}
+
+function asString(value: unknown): string {
+	if (value === null || value === undefined) return ''
+	return String(value).trim()
+}
+
+function truncateLabel(text: unknown, maxLength = 12): string {
+	const safe = asString(text)
+	if (safe.length <= maxLength) return safe
+	return `${safe.slice(0, Math.max(0, maxLength - 1))}.`
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+	if (value && typeof value === 'object') return value as Record<string, unknown>
+	return {}
+}
+
+function toCompanionError(error: unknown): CompanionError {
+	if (error instanceof Error) return error as CompanionError
+
+	const raw = asObject(error)
+	const fallbackMessage = asString(raw.message) || asString(error) || 'Unknown error'
+	const wrapped: CompanionError = new Error(fallbackMessage)
+
+	if (typeof raw.authFailure === 'boolean') {
+		wrapped.authFailure = raw.authFailure
+	}
+
+	const statusCode = Number(raw.statusCode)
+	if (Number.isFinite(statusCode)) {
+		wrapped.statusCode = statusCode
+	}
+
+	if ('responseData' in raw) {
+		wrapped.responseData = raw.responseData
+	}
+
+	return wrapped
+}
+
+export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig> {
+	config: ModuleConfig
+	http: AxiosInstance | null
+	socket: Socket | null
+	pollTimer: NodeJS.Timeout | null
+	offlineFlashTimer: NodeJS.Timeout | null
+	reauthPromise: Promise<void> | null
+	users: Map<number, UserState>
+	conferences: Map<number, { id: number; name: string }>
+	feeds: Map<number, { id: number; name: string }>
+	userTargets: Map<number, PresetTarget[]>
+	currentAddressedBy: Map<number, AddressedEntry>
+	lastAddressedBy: Map<number, AddressedEntry>
+	userChoices: ChoiceItem[]
+	conferenceChoices: ChoiceItem[]
+	cutCameraUser: string
+	connectionState: ConnectionState
+	authToken: string
+	scopeMode: ScopeMode
+	scopeUserId: number | null
+	scopeUserName: string
+	lastCommand: LastCommandState
+
+	constructor(internal: unknown) {
+		super(internal)
+
+		this.config = { ...DEFAULT_CONFIG }
+		this.http = null
+		this.socket = null
+		this.pollTimer = null
+		this.offlineFlashTimer = null
+		this.reauthPromise = null
+
+		this.users = new Map<number, UserState>()
+		this.conferences = new Map<number, { id: number; name: string }>()
+		this.feeds = new Map<number, { id: number; name: string }>()
+		this.userTargets = new Map<number, PresetTarget[]>()
+		this.currentAddressedBy = new Map<number, AddressedEntry>()
+		this.lastAddressedBy = new Map<number, AddressedEntry>()
+
+		this.userChoices = [{ id: PLACEHOLDER_USER_ID, label: 'No users available' }]
+		this.conferenceChoices = [{ id: PLACEHOLDER_CONFERENCE_ID, label: 'No conferences available' }]
+
+		this.cutCameraUser = ''
+		this.connectionState = 'disconnected'
+		this.authToken = ''
+		this.scopeMode = 'all'
+		this.scopeUserId = null
+		this.scopeUserName = ''
+		this.lastCommand = {
+			commandId: '',
+			status: 'idle',
+			reason: '',
+			userId: '',
+			targetType: '',
+			targetId: '',
+			at: 0,
+		}
+	}
+
+	async init(config: ModuleConfig): Promise<void> {
+		this.config = this.applyConfigDefaults(config)
+		this.initVariableDefinitions()
+		this.initActions()
+		this.initFeedbacks()
+		this.initPresets()
+		this.updateVariableValuesFromState()
+		await this.reconnect()
+	}
+
+	async destroy(): Promise<void> {
+		this.connectionState = 'disconnected'
+		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks('connection_ok', 'module_not_running')
+		await this.cleanup({ keepState: false })
+	}
+
+	async configUpdated(config: ModuleConfig): Promise<void> {
+		this.config = this.applyConfigDefaults(config)
+		await this.reconnect()
+	}
+
+	applyConfigDefaults(config: Partial<ModuleConfig> | null | undefined): ModuleConfig {
+		const safeConfig = config || {}
+		const authMode: ModuleConfig['authMode'] =
+			asString(safeConfig.authMode).toLowerCase() === 'credentials' ? 'credentials' : 'apiKey'
+		return {
+			host: asString(safeConfig.host) || DEFAULT_CONFIG.host,
+			port: clampNumber(safeConfig.port, 1, 65535, DEFAULT_CONFIG.port),
+			allowSelfSigned: safeConfig.allowSelfSigned !== false,
+			authMode,
+			apiKey: asString(safeConfig.apiKey),
+			username: asString(safeConfig.username),
+			password: asString(safeConfig.password),
+		}
+	}
+
+	getConfigFields() {
+		return getConfigFields({ DEFAULT_CONFIG, Regex })
+	}
+
+	hasRequiredConfig(): boolean {
+		if (!asString(this.config.host)) return false
+		if (this.usesCredentialAuth()) {
+			return Boolean(asString(this.config.username) && asString(this.config.password))
+		}
+		return Boolean(asString(this.config.apiKey))
+	}
+
+	usesCredentialAuth(): boolean {
+		return asString(this.config.authMode).toLowerCase() === 'credentials'
+	}
+
+	resetAuthContext(): void {
+		this.authToken = ''
+		if (this.usesCredentialAuth()) {
+			this.scopeMode = 'self'
+			this.scopeUserId = null
+			this.scopeUserName = ''
+			return
+		}
+		this.scopeMode = 'all'
+		this.scopeUserId = null
+		this.scopeUserName = ''
+	}
+
+	applyScope(
+		rawScope: unknown,
+		fallback: { mode?: ScopeMode; userId?: number | null; userName?: string } = {}
+	): void {
+		const raw = (rawScope ?? {}) as Record<string, unknown>
+		const modeRaw = asString(raw.mode).toLowerCase()
+		const fallbackMode = asString(fallback?.mode).toLowerCase()
+		const mode: ScopeMode =
+			modeRaw === 'all' || modeRaw === 'self'
+				? modeRaw
+				: fallbackMode === 'all' || fallbackMode === 'self'
+					? fallbackMode
+					: this.usesCredentialAuth()
+						? 'self'
+						: 'all'
+		const parsedUserId = Number(raw.userId)
+		const fallbackUserId = Number(fallback?.userId)
+		const userId = Number.isFinite(parsedUserId)
+			? parsedUserId
+			: Number.isFinite(fallbackUserId)
+				? fallbackUserId
+				: null
+		const userName = asString(raw.userName || fallback?.userName)
+
+		this.scopeMode = mode
+		this.scopeUserId = userId
+		this.scopeUserName = userName
+	}
+
+	hasGlobalOperatorAccess(): boolean {
+		return this.scopeMode === 'all'
+	}
+
+	canControlUser(userId: unknown): boolean {
+		const normalized = Number(userId)
+		if (!Number.isFinite(normalized)) return false
+		if (this.hasGlobalOperatorAccess()) return true
+		return Number(this.scopeUserId) === normalized
+	}
+
+	getScopedUsers(): UserState[] {
+		const users = Array.from(this.users.values()).sort((a, b) => a.name.localeCompare(b.name))
+		if (this.hasGlobalOperatorAccess()) {
+			return users
+		}
+		const scopedId = Number(this.scopeUserId)
+		if (!Number.isFinite(scopedId)) return []
+		return users.filter((user) => Number(user?.id) === scopedId)
+	}
+
+	getAuthHeaders(): Record<string, string> {
+		const headers: Record<string, string> = {}
+		if (this.usesCredentialAuth()) {
+			if (!this.authToken) {
+				const error: CompanionError = new Error('Companion login required')
+				error.authFailure = true
+				throw error
+			}
+			headers.authorization = `Bearer ${this.authToken}`
+			return headers
+		}
+		headers['x-api-key'] = this.config.apiKey
+		return headers
+	}
+
+	async authenticateWithCredentials(): Promise<void> {
+		if (!this.usesCredentialAuth()) {
+			this.resetAuthContext()
+			return
+		}
+		if (!this.http) {
+			this.createHttpClient()
+		}
+
+		const response = await this.http!.request({
+			method: 'POST',
+			url: '/api/v1/companion/auth/login',
+			data: {
+				name: this.config.username,
+				password: this.config.password,
+			},
+			headers: {},
+		})
+
+		if (response.status === 401 || response.status === 403) {
+			const error: CompanionError = new Error(response.data?.error || 'Authentication failed')
+			error.authFailure = true
+			error.statusCode = response.status
+			error.responseData = response.data
+			throw error
+		}
+		if (response.status < 200 || response.status >= 300) {
+			const error: CompanionError = new Error(response.data?.error || `HTTP ${response.status}`)
+			error.statusCode = response.status
+			error.responseData = response.data
+			throw error
+		}
+
+		const token = asString(response.data?.token)
+		if (!token) {
+			const error: CompanionError = new Error('Companion auth response missing token')
+			error.authFailure = true
+			throw error
+		}
+
+		const userId = Number(response.data?.user?.id)
+		const userName = asString(response.data?.user?.name)
+		const isSuperadmin = Boolean(response.data?.user?.isSuperadmin)
+
+		this.authToken = token
+		this.applyScope(response.data?.scope, {
+			mode: isSuperadmin ? 'all' : 'self',
+			userId: Number.isFinite(userId) ? userId : null,
+			userName,
+		})
+	}
+
+	buildBaseUrl(): string {
+		return `https://${this.config.host}:${this.config.port}`
+	}
+
+	createHttpClient(): void {
+		const axiosConfig: AxiosRequestConfig = {
+			baseURL: this.buildBaseUrl(),
+			timeout: FIXED_HTTP_TIMEOUT_MS,
+			validateStatus: () => true,
+		}
+
+		axiosConfig.httpsAgent = new https.Agent({
+			rejectUnauthorized: !this.config.allowSelfSigned,
+		})
+
+		this.http = axios.create(axiosConfig)
+	}
+
+	async reconnect(): Promise<void> {
+		await this.cleanup({ keepState: true })
+		this.resetAuthContext()
+		this.refreshChoiceCaches()
+		this.refreshDefinitions()
+		this.updateVariableValuesFromState()
+
+		if (!this.hasRequiredConfig()) {
+			this.connectionState = 'bad_config'
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.updateStatus(InstanceStatus.BadConfig, 'Host and authentication fields are required')
+			return
+		}
+
+		this.createHttpClient()
+		let hasInitialAuth = !this.usesCredentialAuth()
+		if (this.usesCredentialAuth()) {
+			try {
+				await this.authenticateWithCredentials()
+				hasInitialAuth = true
+			} catch (error) {
+				const companionError = toCompanionError(error)
+				if (companionError.authFailure) {
+					this.connectionState = 'auth_failure'
+					this.updateStatus(InstanceStatus.AuthenticationFailure, companionError.message)
+				} else {
+					this.connectionState = 'connection_failure'
+					this.updateStatus(InstanceStatus.ConnectionFailure, companionError.message)
+				}
+				this.updateVariableValuesFromState()
+				this.checkFeedbacks('connection_ok', 'module_not_running')
+			}
+		}
+
+		if (this.connectionState === 'disconnected') {
+			this.connectionState = 'connecting'
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.updateStatus(InstanceStatus.Connecting, 'Connecting to talktome ...')
+		}
+
+		if (hasInitialAuth) {
+			this.ensureRealtimeConnection()
+		}
+		this.startPoller()
+
+		try {
+			await this.refreshSnapshot('startup')
+		} catch (error) {
+			const companionError = toCompanionError(error)
+			this.log('debug', `Initial startup snapshot failed: ${companionError.message}`)
+		}
+	}
+
+	async cleanup({ keepState }: { keepState: boolean }): Promise<void> {
+		this.connectionState = 'disconnected'
+		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks('connection_ok', 'module_not_running')
+
+		if (this.pollTimer) {
+			clearInterval(this.pollTimer)
+			this.pollTimer = null
+		}
+
+		if (this.offlineFlashTimer) {
+			clearTimeout(this.offlineFlashTimer)
+			this.offlineFlashTimer = null
+		}
+
+		if (this.socket) {
+			this.socket.removeAllListeners()
+			this.socket.disconnect()
+			this.socket = null
+		}
+
+		this.http = null
+		this.authToken = ''
+		this.reauthPromise = null
+		this.resetAuthContext()
+
+		if (!keepState) {
+			this.users.clear()
+			this.conferences.clear()
+			this.feeds.clear()
+			this.userTargets.clear()
+			this.currentAddressedBy.clear()
+			this.lastAddressedBy.clear()
+			this.cutCameraUser = ''
+			this.refreshChoiceCaches()
+			this.refreshDefinitions()
+		}
+	}
+
+	startPoller(): void {
+		if (this.pollTimer) {
+			clearInterval(this.pollTimer)
+		}
+
+		this.pollTimer = setInterval(() => {
+			if (this.socket?.connected) return
+			this.refreshSnapshot('poll').catch((error) => {
+				const companionError = toCompanionError(error)
+				this.log('debug', `Snapshot poll failed: ${companionError.message}`)
+			})
+		}, 10000)
+	}
+
+	async apiRequest(method: string, path: string, data?: unknown): Promise<AxiosResponse> {
+		if (!this.http) {
+			this.createHttpClient()
+		}
+		const headers = this.getAuthHeaders()
+
+		const response = await this.http!.request({
+			method,
+			url: path,
+			data,
+			headers,
+		})
+
+		if (response.status === 401) {
+			if (this.usesCredentialAuth()) {
+				await this.refreshCredentialSession()
+				const retryHeaders = this.getAuthHeaders()
+				const retryResponse = await this.http!.request({
+					method,
+					url: path,
+					data,
+					headers: retryHeaders,
+				})
+
+				if (retryResponse.status >= 200 && retryResponse.status < 300) {
+					return retryResponse
+				}
+
+				if (retryResponse.status === 401 || retryResponse.status === 403) {
+					const error: CompanionError = new Error(retryResponse.data?.error || 'Authentication failed')
+					error.authFailure = true
+					error.statusCode = retryResponse.status
+					error.responseData = retryResponse.data
+					throw error
+				}
+
+				const message = retryResponse.data?.error || `HTTP ${retryResponse.status}`
+				const error: CompanionError = new Error(message)
+				error.statusCode = retryResponse.status
+				error.responseData = retryResponse.data
+				throw error
+			}
+
+			const error: CompanionError = new Error(response.data?.error || 'Authentication failed')
+			error.authFailure = true
+			error.statusCode = response.status
+			error.responseData = response.data
+			throw error
+		}
+
+		if (response.status < 200 || response.status >= 300) {
+			const message = response.data?.error || `HTTP ${response.status}`
+			const error: CompanionError = new Error(message)
+			error.statusCode = response.status
+			error.responseData = response.data
+			throw error
+		}
+
+		return response
+	}
+
+	async refreshCredentialSession(): Promise<void> {
+		if (!this.usesCredentialAuth()) return
+		if (!this.reauthPromise) {
+			this.reauthPromise = (async () => {
+				await this.authenticateWithCredentials()
+				if (this.socket) {
+					try {
+						this.applySocketAuthContext()
+					} catch (error) {
+						const companionError = toCompanionError(error)
+						this.log('debug', `Socket auth refresh failed: ${companionError.message}`)
+					}
+				}
+			})().finally(() => {
+				this.reauthPromise = null
+			})
+		}
+
+		return this.reauthPromise
+	}
+
+	getSocketAuthPayload(): { token: string } | { apiKey: string } {
+		if (this.usesCredentialAuth()) {
+			return { token: this.authToken }
+		}
+		return { apiKey: this.config.apiKey }
+	}
+
+	applySocketAuthContext(): void {
+		if (!this.socket) return
+		const headers = this.getAuthHeaders()
+		this.socket.auth = this.getSocketAuthPayload()
+		if (this.socket.io?.opts) {
+			this.socket.io.opts.extraHeaders = headers
+		}
+	}
+
+	ensureRealtimeConnection(): void {
+		if (!this.hasRequiredConfig()) return
+		if (!this.socket) {
+			this.connectRealtime()
+			return
+		}
+
+		try {
+			this.applySocketAuthContext()
+		} catch (error) {
+			return
+		}
+
+		if (!this.socket.connected) {
+			this.socket.connect()
+		}
+	}
+
+	async refreshSnapshot(reason: string): Promise<void> {
+		try {
+			if (this.usesCredentialAuth() && !this.authToken) {
+				await this.refreshCredentialSession()
+			}
+
+			const response = await this.apiRequest('GET', '/api/v1/companion/state')
+			this.applySnapshot(response.data)
+			await this.refreshTargetsForAllUsers()
+			if (!this.socket?.connected) {
+				this.connectionState = 'connected'
+				this.updateStatus(InstanceStatus.Ok)
+				this.updateVariableValuesFromState()
+				this.checkFeedbacks('connection_ok', 'module_not_running')
+				this.ensureRealtimeConnection()
+			}
+		} catch (error) {
+			const companionError = toCompanionError(error)
+			if (companionError.authFailure) {
+				this.connectionState = 'auth_failure'
+				this.updateStatus(InstanceStatus.AuthenticationFailure, companionError.message)
+			} else {
+				this.connectionState = 'connection_failure'
+				this.updateStatus(InstanceStatus.ConnectionFailure, companionError.message)
+			}
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('connection_ok', 'module_not_running')
+
+			if (reason !== 'poll') {
+				this.log('error', `Snapshot request failed: ${companionError.message}`)
+			}
+			throw companionError
+		}
+	}
+
+	connectRealtime(): void {
+		if (!this.hasRequiredConfig()) return
+
+		const socketUrl = `${this.buildBaseUrl()}/companion`
+		const requestAuthHeaders = this.getAuthHeaders()
+		const socketAuth = this.getSocketAuthPayload()
+		const options: Record<string, unknown> = {
+			transports: ['websocket', 'polling'],
+			timeout: FIXED_HTTP_TIMEOUT_MS,
+			auth: socketAuth,
+			extraHeaders: requestAuthHeaders,
+			reconnection: true,
+			reconnectionDelayMax: 5000,
+		}
+
+		if (this.config.allowSelfSigned) {
+			options.rejectUnauthorized = false
+		}
+
+		this.socket = io(socketUrl, options)
+
+		this.socket.on('connect', () => {
+			this.connectionState = 'connected'
+			this.updateStatus(InstanceStatus.Ok)
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.socket?.emit('request-snapshot')
+		})
+
+		this.socket.on('disconnect', (reason) => {
+			this.connectionState = 'disconnected'
+			this.updateStatus(InstanceStatus.Disconnected, reason || 'Socket disconnected')
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('connection_ok', 'module_not_running')
+		})
+
+		this.socket.on('connect_error', (error) => {
+			const message = error?.message || 'Socket connect error'
+			const lower = message.toLowerCase()
+			if (lower.includes('unauthorized') || lower.includes('auth')) {
+				this.connectionState = 'auth_failure'
+				this.updateStatus(InstanceStatus.AuthenticationFailure, message)
+				if (this.usesCredentialAuth()) {
+					this.refreshCredentialSession()
+						.then(() => {
+							this.ensureRealtimeConnection()
+						})
+						.catch((reauthError: unknown) => {
+							const companionError = toCompanionError(reauthError)
+							this.log('debug', `Credential re-auth failed: ${companionError.message}`)
+						})
+				}
+			} else {
+				this.connectionState = 'connection_failure'
+				this.updateStatus(InstanceStatus.ConnectionFailure, message)
+			}
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('connection_ok', 'module_not_running')
+		})
+
+			this.socket.on('snapshot', (snapshot) => {
+				this.applySnapshot(snapshot)
+				this.refreshTargetsForAllUsers().catch((error) => {
+					const companionError = toCompanionError(error)
+					this.log('debug', `Target refresh after snapshot failed: ${companionError.message}`)
+				})
+			})
+
+		this.socket.on('user-targets-updated', (payload) => {
+				const userId = Number(payload?.userId)
+				if (Number.isFinite(userId)) {
+					this.refreshTargetsForSingleUser(userId).catch((error) => {
+						const companionError = toCompanionError(error)
+						this.log('debug', `Target refresh for user ${userId} failed: ${companionError.message}`)
+					})
+					return
+				}
+				this.refreshTargetsForAllUsers().catch((error) => {
+					const companionError = toCompanionError(error)
+					this.log('debug', `Target refresh failed: ${companionError.message}`)
+				})
+			})
+
+		this.socket.on('user-state', (payload) => {
+			if (payload?.state) {
+				this.applyUserState(payload.state)
+			}
+		})
+
+		this.socket.on('cut-camera', (payload) => {
+			this.cutCameraUser = asString(payload?.user)
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks('user_cut_camera')
+		})
+
+		this.socket.on('command-result', (payload) => {
+			this.applyCommandResult(payload)
+		})
+	}
+
+	applySnapshot(snapshot: unknown): void {
+		const rawSnapshot = (snapshot ?? {}) as Record<string, unknown>
+		this.applyScope(rawSnapshot.scope, {
+			mode: this.scopeMode,
+			userId: this.scopeUserId,
+			userName: this.scopeUserName,
+		})
+		this.users.clear()
+		this.conferences.clear()
+		this.feeds.clear()
+
+		this.cutCameraUser = asString(rawSnapshot.cutCameraUser)
+
+		const users = Array.isArray(rawSnapshot.users) ? rawSnapshot.users : []
+		for (const row of users) {
+			const rawRow = (row ?? {}) as Record<string, unknown>
+			const state = (rawRow.state ?? {}) as Record<string, unknown>
+			const id = Number(rawRow.id ?? state.userId)
+			if (!Number.isFinite(id)) continue
+
+			const user = this.makeEmptyUserState(id)
+			user.name = asString(rawRow.name || state.name || user.name)
+			this.mergeUserState(user, state)
+			this.users.set(id, user)
+		}
+
+		const conferences = Array.isArray(rawSnapshot.conferences) ? rawSnapshot.conferences : []
+		for (const row of conferences) {
+			const rawConference = (row ?? {}) as Record<string, unknown>
+			const id = Number(rawConference.id)
+			if (!Number.isFinite(id)) continue
+			this.conferences.set(id, {
+				id,
+				name: asString(rawConference.name) || `Conference ${id}`,
+			})
+		}
+
+		const feeds = Array.isArray(rawSnapshot.feeds) ? rawSnapshot.feeds : []
+		for (const row of feeds) {
+			const rawFeed = (row ?? {}) as Record<string, unknown>
+			const id = Number(rawFeed.id)
+			if (!Number.isFinite(id)) continue
+			this.feeds.set(id, {
+				id,
+				name: asString(rawFeed.name) || `Feed ${id}`,
+			})
+		}
+
+		this.recomputeAddressingState()
+		this.refreshChoiceCaches()
+		this.refreshDefinitions()
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks(
+			'connection_ok',
+			'module_not_running',
+			'user_online',
+			'user_talking',
+			'user_talking_target',
+			'user_talking_reply',
+			'user_locked',
+			'target_online',
+			'target_offline',
+			'target_addressed_now',
+			'reply_available',
+			'user_addressed_now',
+			'operator_not_logged_in',
+			'user_cut_camera',
+			'last_command_failed'
+		)
+	}
+
+	normalizePresetTargetRow(rawTarget: unknown): PresetTarget | null {
+		const raw = (rawTarget ?? {}) as Record<string, unknown>
+		const targetType = asString(raw.targetType).toLowerCase()
+		if (targetType !== 'conference' && targetType !== 'user') return null
+
+		const targetId = Number(raw.targetId)
+		if (!Number.isFinite(targetId)) return null
+
+		return {
+			targetType: targetType as PresetTarget['targetType'],
+			targetId,
+			name: asString(raw.name) || `${targetType} ${targetId}`,
+		}
+	}
+
+	areSameTargetLists(left: PresetTarget[], right: PresetTarget[]): boolean {
+		if (left.length !== right.length) return false
+
+		for (let i = 0; i < left.length; i += 1) {
+			const a = left[i]
+			const b = right[i]
+			if (
+				asString(a?.targetType) !== asString(b?.targetType) ||
+				Number(a?.targetId) !== Number(b?.targetId) ||
+				asString(a?.name) !== asString(b?.name)
+			) {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	async fetchTargetsForUser(userId: number): Promise<PresetTarget[]> {
+		const response = await this.apiRequest('GET', `/api/v1/companion/users/${userId}/targets`)
+		const rawTargets = Array.isArray(response.data) ? response.data : []
+		const normalizedTargets: PresetTarget[] = []
+		for (const row of rawTargets) {
+			const normalized = this.normalizePresetTargetRow(row)
+			if (normalized) normalizedTargets.push(normalized)
+		}
+		return normalizedTargets
+	}
+
+	async refreshTargetsForUsers(
+		userIds: unknown[],
+		{ pruneMissing = false }: { pruneMissing?: boolean } = {}
+	): Promise<void> {
+		const normalizedUserIds = Array.from(
+			new Set(
+				(userIds || [])
+					.map((id) => Number(id))
+					.filter((id) => Number.isFinite(id) && this.users.has(id))
+			)
+		)
+
+		let changed = false
+		if (pruneMissing) {
+			const activeIdSet = new Set(normalizedUserIds.map((id) => String(id)))
+			for (const existingKey of Array.from(this.userTargets.keys())) {
+				if (!activeIdSet.has(String(existingKey))) {
+					this.userTargets.delete(existingKey)
+					changed = true
+				}
+			}
+		}
+
+		const results = await Promise.all(
+			normalizedUserIds.map(async (userId) => {
+				try {
+					const targets = await this.fetchTargetsForUser(userId)
+					return { userId, targets }
+				} catch (error) {
+					const companionError = toCompanionError(error)
+					this.log('debug', `Targets for user ${userId} failed: ${companionError.message}`)
+					return { userId, targets: this.userTargets.get(userId) || [] }
+				}
+			})
+		)
+
+		for (const result of results) {
+			const previous = this.userTargets.get(result.userId) || []
+			if (!this.areSameTargetLists(previous, result.targets)) {
+				this.userTargets.set(result.userId, result.targets)
+				changed = true
+			}
+		}
+
+		if (changed) {
+			this.recomputeAddressingState()
+			this.refreshDefinitions()
+			this.updateVariableValuesFromState()
+			this.checkFeedbacks(
+				'target_online',
+				'target_offline',
+				'user_talking_target',
+				'user_talking_reply',
+				'target_addressed_now',
+				'reply_available',
+				'user_addressed_now'
+			)
+		}
+	}
+
+	async refreshTargetsForAllUsers() {
+		const scopedUserIds = this.hasGlobalOperatorAccess()
+			? Array.from(this.users.keys())
+			: Number.isFinite(Number(this.scopeUserId))
+				? [Number(this.scopeUserId)]
+				: []
+		await this.refreshTargetsForUsers(scopedUserIds, { pruneMissing: true })
+	}
+
+	async refreshTargetsForSingleUser(userId: unknown): Promise<void> {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId) || !this.users.has(normalizedUserId)) {
+			return
+		}
+		if (!this.canControlUser(normalizedUserId)) {
+			return
+		}
+		await this.refreshTargetsForUsers([normalizedUserId], { pruneMissing: false })
+	}
+
+	applyUserState(rawState: unknown): void {
+		const raw = (rawState ?? {}) as Record<string, unknown>
+		const userId = Number(raw.userId)
+		if (!Number.isFinite(userId)) return
+
+		const user = this.users.get(userId) || this.makeEmptyUserState(userId)
+		this.mergeUserState(user, raw)
+		this.users.set(userId, user)
+
+		this.recomputeAddressingState()
+		this.refreshChoiceCaches()
+		this.refreshDefinitions()
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks(
+			'module_not_running',
+			'user_online',
+			'user_talking',
+			'user_talking_target',
+			'user_talking_reply',
+			'user_locked',
+			'target_online',
+			'target_offline',
+			'target_addressed_now',
+			'reply_available',
+			'user_addressed_now',
+			'operator_not_logged_in',
+			'user_cut_camera'
+		)
+	}
+
+	makeEmptyUserState(userId: number): UserState {
+		return {
+			id: userId,
+			name: `User ${userId}`,
+			online: false,
+			talking: false,
+			talkLocked: false,
+			socketId: '',
+			currentTarget: null,
+			lastTarget: null,
+			lastSpokeAt: null,
+			updatedAt: null,
+		}
+	}
+
+	mergeUserState(target: UserState, rawState: unknown): void {
+		const raw = (rawState ?? {}) as Record<string, unknown>
+		target.name = asString(raw.name || target.name)
+		target.online = Boolean(raw.online)
+		target.talking = Boolean(raw.talking)
+		target.talkLocked = Boolean(raw.talkLocked)
+		target.socketId = asString(raw.socketId)
+		target.currentTarget = this.normalizeStateTarget(raw.currentTarget)
+		target.lastTarget = this.normalizeStateTarget(raw.lastTarget)
+		target.lastCommandId = asString(raw.lastCommandId)
+		target.lastCommandResult = asString(raw.lastCommandResult)
+		target.lastSpokeAt = this.normalizeTimestamp(raw.lastSpokeAt)
+		target.updatedAt = this.normalizeTimestamp(raw.updatedAt)
+	}
+
+	normalizeStateTarget(rawTarget: unknown): NormalizedTarget | null {
+		const raw = (rawTarget ?? {}) as Record<string, unknown>
+		const type = asString(raw.type).toLowerCase()
+		if (type !== 'user' && type !== 'conference') return null
+		const rawId = raw.id
+		if (rawId === null || rawId === undefined || rawId === '') return null
+		const numericId = Number(rawId)
+		const id = Number.isFinite(numericId) ? numericId : asString(rawId)
+		if (id === '') return null
+		return { type: type as NormalizedTarget['type'], id }
+	}
+
+	normalizeTimestamp(rawValue: unknown): number | null {
+		if (rawValue === null || rawValue === undefined || rawValue === '') return null
+		const numeric = Number(rawValue)
+		if (Number.isFinite(numeric)) return numeric
+		const parsed = Date.parse(String(rawValue))
+		return Number.isFinite(parsed) ? parsed : null
+	}
+
+	replyFromVariableId(userId: number | string): string {
+		return `reply_from_user_${Number(userId)}`
+	}
+
+	replyFromVariableToken(userId: number | string): string {
+		const instanceId = asString(this.id || this.label) || 'talktome'
+		return `$(${instanceId}:${this.replyFromVariableId(userId)})`
+	}
+
+	resolveUserIdFromTargetId(rawTargetId: unknown): number | null {
+		const numericId = Number(rawTargetId)
+		if (Number.isFinite(numericId)) return numericId
+
+		const socketId = asString(rawTargetId)
+		if (!socketId) return null
+
+		for (const user of this.users.values()) {
+			const userId = Number(user?.id)
+			if (!Number.isFinite(userId)) continue
+			if (asString(user?.socketId) === socketId) {
+				return userId
+			}
+		}
+
+		return null
+	}
+
+	areTargetsEquivalent(left: unknown, right: unknown): boolean {
+		const a = this.normalizeStateTarget(left)
+		const b = this.normalizeStateTarget(right)
+		if (!a || !b) return false
+		if (a.type !== b.type) return false
+
+		if (a.type === 'conference') {
+			return Number(a.id) === Number(b.id)
+		}
+
+		const aUserId = this.resolveUserIdFromTargetId(a.id)
+		const bUserId = this.resolveUserIdFromTargetId(b.id)
+		if (!Number.isFinite(aUserId) || !Number.isFinite(bUserId)) return false
+		return aUserId === bUserId
+	}
+
+	resolveReplyReferenceTarget(userId: unknown): NormalizedTarget | null {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return null
+		const addressed =
+			this.currentAddressedBy.get(normalizedUserId) || this.lastAddressedBy.get(normalizedUserId)
+		if (!addressed) return null
+		return this.normalizeStateTarget({
+			type: addressed.targetType,
+			id: addressed.targetId,
+		})
+	}
+
+	isUserTalkingToExactTarget(userId: unknown, targetType: unknown, targetId: unknown): boolean {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return false
+		const user = this.users.get(normalizedUserId)
+		if (!user?.talking) return false
+
+		const currentTarget = this.normalizeStateTarget(user.currentTarget)
+		const expectedTarget = this.normalizeStateTarget({ type: targetType, id: targetId })
+		return this.areTargetsEquivalent(currentTarget, expectedTarget)
+	}
+
+	isUserTalkingToReply(userId: unknown): boolean {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return false
+		const user = this.users.get(normalizedUserId)
+		if (!user?.talking) return false
+
+		const currentTarget = this.normalizeStateTarget(user.currentTarget)
+		const replyTarget = this.resolveReplyReferenceTarget(normalizedUserId)
+		return this.areTargetsEquivalent(currentTarget, replyTarget)
+	}
+
+	isAddressingEntryMatchingTarget(
+		entry: AddressedEntry | null | undefined,
+		targetType: unknown,
+		targetId: unknown
+	): boolean {
+		if (!entry) return false
+		const entryTarget = this.normalizeStateTarget({
+			type: entry.targetType,
+			id: entry.targetId,
+		})
+		const expectedTarget = this.normalizeStateTarget({
+			type: targetType,
+			id: targetId,
+		})
+		return this.areTargetsEquivalent(entryTarget, expectedTarget)
+	}
+
+	isUserAddressedByTargetNow(userId: unknown, targetType: unknown, targetId: unknown): boolean {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return false
+		const entry = this.currentAddressedBy.get(normalizedUserId)
+		return this.isAddressingEntryMatchingTarget(entry, targetType, targetId)
+	}
+
+	hasReplyTarget(userId: unknown): boolean {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return false
+		return this.currentAddressedBy.has(normalizedUserId) || this.lastAddressedBy.has(normalizedUserId)
+	}
+
+	resolveReplyLabelForEntry(entry: AddressedEntry | null | undefined, userId: unknown): string {
+		if (!entry) return ''
+		const entryTargetType = asString(entry.targetType).toLowerCase()
+		const normalizedUserId = Number(userId)
+
+		if (entryTargetType === 'conference') {
+			const conferenceId = Number(entry.targetId)
+			if (Number.isFinite(conferenceId)) {
+				const conferenceName = asString(this.conferences.get(conferenceId)?.name)
+				if (conferenceName) return conferenceName
+			}
+		}
+
+		if (entryTargetType === 'user') {
+				const targetUserId = Number(this.resolveUserIdFromTargetId(entry.targetId))
+				if (Number.isFinite(targetUserId) && targetUserId !== normalizedUserId) {
+					const targetUserName = asString(this.users.get(targetUserId)?.name)
+				if (targetUserName) return targetUserName
+			}
+			const fromName = asString(entry.fromName)
+			if (fromName) return fromName
+			const fromUserId = Number(entry.fromUserId)
+			if (Number.isFinite(fromUserId)) {
+				const fallbackName = asString(this.users.get(fromUserId)?.name)
+				if (fallbackName) return fallbackName
+			}
+		}
+
+		return asString(entry.fromName)
+	}
+
+	formatReplyTargetForUser(userId: unknown): string {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return ''
+
+		const currentEntry = this.currentAddressedBy.get(normalizedUserId)
+		const lastEntry = this.lastAddressedBy.get(normalizedUserId)
+		const label =
+			this.resolveReplyLabelForEntry(currentEntry, normalizedUserId) ||
+			this.resolveReplyLabelForEntry(lastEntry, normalizedUserId)
+
+		return label ? `(${label})` : ''
+	}
+
+	normalizeCommandReason(rawReason: unknown): string {
+		const reason = asString(rawReason)
+		const lower = reason.toLowerCase()
+		if (
+			lower.includes('offline') ||
+			lower.includes('not connected') ||
+			lower.includes('target-not-available') ||
+			lower.includes('http 409')
+		) {
+			return 'Target offline'
+		}
+		return reason
+	}
+
+	triggerTargetOfflineFeedbackFlash() {
+		if (this.offlineFlashTimer) {
+			clearTimeout(this.offlineFlashTimer)
+			this.offlineFlashTimer = null
+		}
+		this.checkFeedbacks('last_target_offline')
+		this.offlineFlashTimer = setTimeout(() => {
+			this.offlineFlashTimer = null
+			this.checkFeedbacks('last_target_offline')
+		}, 1500)
+	}
+
+	userHasConferenceTarget(userId: unknown, conferenceId: unknown): boolean {
+		const targets = this.userTargets.get(Number(userId)) || []
+		return targets.some(
+			(target) => target.targetType === 'conference' && Number(target.targetId) === Number(conferenceId)
+		)
+	}
+
+	resolveTargetOnline(targetType: unknown, targetId: unknown): boolean {
+		const normalizedType = asString(targetType).toLowerCase()
+
+		if (normalizedType === 'user') {
+			const resolvedUserId = Number(this.resolveUserIdFromTargetId(targetId))
+			if (!Number.isFinite(resolvedUserId)) return false
+			const user = this.users.get(resolvedUserId)
+			return Boolean(user?.online && asString(user?.socketId))
+		}
+
+		if (normalizedType === 'conference') {
+			const normalizedId = Number(targetId)
+			if (!Number.isFinite(normalizedId)) return false
+			for (const user of this.users.values()) {
+				if (!user?.online || !asString(user?.socketId)) continue
+				if (this.userHasConferenceTarget(user.id, normalizedId)) {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+	resolveAddressedUsersForTarget(target: NormalizedTarget | null, speakerUserId: unknown): number[] {
+		if (!target) return []
+		if (target.type === 'user') {
+			const resolvedTargetUserId = this.resolveUserIdFromTargetId(target.id)
+			if (!Number.isFinite(resolvedTargetUserId) || resolvedTargetUserId === Number(speakerUserId)) return []
+			return [Number(resolvedTargetUserId)]
+		}
+
+		if (target.type === 'conference') {
+			const conferenceId = Number(target.id)
+			if (!Number.isFinite(conferenceId)) return []
+
+			const addressedUsers: number[] = []
+			for (const user of this.users.values()) {
+				const userId = Number(user?.id)
+				if (!Number.isFinite(userId) || userId === Number(speakerUserId)) continue
+				if (this.userHasConferenceTarget(userId, conferenceId)) {
+					addressedUsers.push(userId)
+				}
+			}
+			return addressedUsers
+		}
+
+		return []
+	}
+
+	setAddressedEntry(targetMap: Map<number, AddressedEntry>, targetUserId: number, payload: AddressedEntry): void {
+		const existing = targetMap.get(targetUserId)
+		if (!existing || Number(payload.at) >= Number(existing.at || 0)) {
+			targetMap.set(targetUserId, payload)
+		}
+	}
+
+	buildAddressedEntry(
+		spokenTarget: NormalizedTarget | null,
+		speakerUserId: unknown,
+		fromName: string,
+		at: number
+	): AddressedEntry | null {
+		const normalizedSpeakerId = Number(speakerUserId)
+		if (!spokenTarget || !Number.isFinite(normalizedSpeakerId)) return null
+
+		if (spokenTarget.type === 'user') {
+			return {
+				fromUserId: normalizedSpeakerId,
+				fromName,
+				targetType: 'user',
+				targetId: normalizedSpeakerId,
+				at,
+			}
+		}
+
+		if (spokenTarget.type === 'conference') {
+			const conferenceId = Number(spokenTarget.id)
+			if (!Number.isFinite(conferenceId)) return null
+			return {
+				fromUserId: normalizedSpeakerId,
+				fromName,
+				targetType: 'conference',
+				targetId: conferenceId,
+				at,
+			}
+		}
+
+		return null
+	}
+
+	recomputeAddressingState(): void {
+		const currentAddressedBy = new Map<number, AddressedEntry>()
+		const lastAddressedBy = new Map<number, AddressedEntry>()
+
+		for (const speaker of this.users.values()) {
+			const speakerUserId = Number(speaker?.id)
+			if (!Number.isFinite(speakerUserId)) continue
+
+			const fromName = asString(speaker?.name) || `User ${speakerUserId}`
+			const nowAt = this.normalizeTimestamp(speaker?.updatedAt) || Date.now()
+			const lastSpokeAt = this.normalizeTimestamp(speaker?.lastSpokeAt) || nowAt
+			const currentTarget = this.normalizeStateTarget(speaker?.currentTarget)
+			const lastTarget = this.normalizeStateTarget(speaker?.lastTarget) || currentTarget
+
+			if (speaker?.talking && currentTarget) {
+				const currentEntry = this.buildAddressedEntry(currentTarget, speakerUserId, fromName, nowAt)
+				if (currentEntry) {
+					const currentUsers = this.resolveAddressedUsersForTarget(currentTarget, speakerUserId)
+					for (const targetUserId of currentUsers) {
+						this.setAddressedEntry(currentAddressedBy, targetUserId, currentEntry)
+					}
+				}
+			}
+
+			if (lastTarget) {
+				const historyEntry = this.buildAddressedEntry(lastTarget, speakerUserId, fromName, lastSpokeAt)
+				if (historyEntry) {
+					const historyUsers = this.resolveAddressedUsersForTarget(lastTarget, speakerUserId)
+					for (const targetUserId of historyUsers) {
+						this.setAddressedEntry(lastAddressedBy, targetUserId, historyEntry)
+					}
+				}
+			}
+		}
+
+		this.currentAddressedBy = currentAddressedBy
+		this.lastAddressedBy = lastAddressedBy
+	}
+
+	applyCommandResult(payload: unknown): void {
+		const raw = (payload ?? {}) as Record<string, unknown>
+		const status = raw.ok ? 'ok' : 'failed'
+		const reason = this.normalizeCommandReason(raw.reason)
+		this.lastCommand = {
+			commandId: asString(raw.commandId),
+			status,
+			reason,
+			userId: Number.isFinite(Number(raw.userId)) ? String(Number(raw.userId)) : '',
+			targetType: asString(raw.targetType),
+			targetId: asString(raw.targetId),
+			at: Date.now(),
+		}
+
+		if (raw.state) {
+			this.applyUserState(raw.state)
+		}
+
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks(
+			'last_command_failed',
+			'user_talking',
+			'user_talking_target',
+			'user_talking_reply',
+			'user_locked',
+			'target_online',
+			'target_offline',
+			'target_addressed_now',
+			'reply_available',
+			'user_addressed_now',
+			'operator_not_logged_in'
+		)
+
+		if (reason === 'Target offline') {
+			this.triggerTargetOfflineFeedbackFlash()
+		}
+	}
+
+	refreshChoiceCaches(): void {
+		const sortedUsers = this.getScopedUsers()
+		this.userChoices =
+			sortedUsers.length > 0
+				? sortedUsers.map((user) => ({ id: user.id, label: `${user.name} (#${user.id})` }))
+				: [{ id: PLACEHOLDER_USER_ID, label: 'No users available' }]
+
+		const sortedConferences = Array.from(this.conferences.values()).sort((a, b) =>
+			a.name.localeCompare(b.name)
+		)
+		this.conferenceChoices =
+			sortedConferences.length > 0
+				? sortedConferences.map((conference) => ({
+							id: conference.id,
+							label: `${conference.name} (#${conference.id})`,
+					  }))
+				: [{ id: PLACEHOLDER_CONFERENCE_ID, label: 'No conferences available' }]
+	}
+
+	refreshDefinitions() {
+		this.initVariableDefinitions()
+		this.initActions()
+		this.initFeedbacks()
+		this.initPresets()
+	}
+
+	resolveChoiceId(rawValue: unknown): number | null {
+		const id = Number(rawValue)
+		if (!Number.isFinite(id) || id < 0) return null
+		return id
+	}
+
+	async executeTalkCommand(options: Record<string, unknown>): Promise<void> {
+		const userId = this.resolveChoiceId(options.userId)
+		if (!userId) {
+			throw new Error('Invalid user')
+		}
+		if (!this.canControlUser(userId)) {
+			const error: CompanionError = new Error('Forbidden for this companion account')
+			error.authFailure = true
+			throw error
+		}
+
+		const action = asString(options.action) || 'press'
+		const targetType = asString(options.targetType) || 'conference'
+		const waitMs = FIXED_COMMAND_WAIT_MS
+
+		const payload: CommandPayload = {
+			action,
+			targetType,
+			waitMs,
+		}
+
+		if (targetType === 'conference') {
+			const conferenceId = this.resolveChoiceId(options.targetConferenceId)
+			if (!conferenceId) {
+				throw new Error('Invalid conference')
+			}
+			payload.targetId = conferenceId
+		} else if (targetType === 'user') {
+			const targetUserId = this.resolveChoiceId(options.targetUserId)
+			if (!targetUserId) {
+				throw new Error('Invalid target user')
+			}
+			payload.targetId = targetUserId
+		}
+
+		let response: AxiosResponse
+		try {
+			response = await this.apiRequest('POST', `/api/v1/companion/users/${userId}/talk`, payload)
+		} catch (error) {
+			const companionError = toCompanionError(error)
+			if (companionError.statusCode === 409) {
+				const result = asObject(companionError.responseData)
+				const nestedResult = asObject(result.result)
+				const commandId = asString(result.commandId || nestedResult.commandId)
+				const reason = this.normalizeCommandReason(nestedResult.reason || result.error || companionError.message)
+				this.lastCommand = {
+					commandId,
+					status: 'failed',
+					reason,
+					userId: String(userId),
+					targetType,
+					targetId: asString(payload.targetId),
+					at: Date.now(),
+				}
+				this.updateVariableValuesFromState()
+				this.checkFeedbacks('last_command_failed')
+				if (reason === 'Target offline') {
+					this.triggerTargetOfflineFeedbackFlash()
+				}
+				return
+			}
+			throw companionError
+		}
+		const result = asObject(response.data)
+		const nestedResult = asObject(result.result)
+		const status = asString(result.status) || (response.status === 202 ? 'pending' : 'ok')
+		const reason = this.normalizeCommandReason(nestedResult.reason || result.error)
+		const commandId = asString(result.commandId || nestedResult.commandId)
+
+		this.lastCommand = {
+			commandId,
+			status,
+			reason,
+			userId: String(userId),
+			targetType,
+			targetId: asString(payload.targetId),
+			at: Date.now(),
+		}
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks('last_command_failed')
+		if (reason === 'Target offline') {
+			this.triggerTargetOfflineFeedbackFlash()
+		}
+	}
+
+	initActions() {
+		return defineActions(this, {
+			PLACEHOLDER_USER_ID,
+			PLACEHOLDER_CONFERENCE_ID,
+			InstanceStatus,
+			asString,
+		})
+	}
+
+	initFeedbacks() {
+		return defineFeedbacks(this, {
+			PLACEHOLDER_USER_ID,
+			combineRgb,
+			WEB_COLORS,
+			asString,
+		})
+	}
+
+	initVariableDefinitions() {
+		return defineVariableDefinitions(this, { asString })
+	}
+
+	updateVariableValuesFromState() {
+		return updateVariablesFromState(this)
+	}
+
+	initPresets() {
+		return definePresets(this, {
+			PLACEHOLDER_CONFERENCE_ID,
+			WEB_COLORS,
+			truncateLabel,
+			combineRgb,
+		})
+	}
+}
+
+runEntrypoint(TalkToMeCompanionInstance, UpgradeScripts)
+
+export {}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/bitfocus/companion-module-base/main/schemas/manifest.schema.json",
+  "id": "talktome",
+  "name": "talktome",
+  "shortname": "talktome",
+  "description": "talktome intercom control and feedback",
+  "version": "0.1.4",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/thepoison606/companion-module-talktome",
+  "bugs": "https://github.com/thepoison606/companion-module-talktome/issues",
+  "maintainers": [
+    {
+      "name": "Daniel Jocher"
+    }
+  ],
+  "legacyIds": [],
+  "runtime": {
+    "type": "node18",
+    "api": "nodejs-ipc",
+    "apiVersion": "1.13.0",
+    "entrypoint": "../dist/main.js"
+  },
+  "manufacturer": "talktome",
+  "products": [
+    "talktome server"
+  ],
+  "keywords": [
+    "intercom",
+    "ptt",
+    "companion",
+    "talktome"
+  ]
+}
