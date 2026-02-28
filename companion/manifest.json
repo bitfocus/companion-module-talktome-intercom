@@ -5,7 +5,7 @@
   "shortname": "talktome",
   "description": "talktome intercom control and feedback",
   "version": "0.1.4",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": "https://github.com/thepoison606/companion-module-talktome",
   "bugs": "https://github.com/thepoison606/companion-module-talktome/issues",
   "maintainers": [

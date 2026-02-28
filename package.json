@@ -2,7 +2,7 @@
   "name": "companion-module-talktome",
   "version": "0.1.4",
   "description": "Bitfocus companion module for talktome",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "type": "commonjs",
   "repository": {
     "type": "git",
