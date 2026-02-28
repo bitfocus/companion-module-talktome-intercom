@@ -20,6 +20,10 @@ export interface ModuleConfig {
 	password: string
 }
 
+export interface ModuleSecrets {
+	password: string
+}
+
 export interface ChoiceItem {
 	id: number
 	label: string

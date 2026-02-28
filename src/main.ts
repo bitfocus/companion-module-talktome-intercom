@@ -19,6 +19,7 @@ import type {
 	ConnectionState,
 	LastCommandState,
 	ModuleConfig,
+	ModuleSecrets,
 	NormalizedTarget,
 	PresetTarget,
 	ScopeMode,
@@ -97,7 +98,7 @@ function toCompanionError(error: unknown): CompanionError {
 	return wrapped
 }
 
-export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig> {
+export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
 	config: ModuleConfig
 	http: AxiosInstance | null
 	socket: Socket | null
@@ -157,8 +158,8 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig> {
 		}
 	}
 
-	async init(config: ModuleConfig): Promise<void> {
-		this.config = this.applyConfigDefaults(config)
+	async init(config: ModuleConfig, _isFirstInit: boolean, secrets: ModuleSecrets): Promise<void> {
+		this.config = this.applyConfigDefaults(config, secrets)
 		this.initVariableDefinitions()
 		this.initActions()
 		this.initFeedbacks()
@@ -175,13 +176,17 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig> {
 		await this.cleanup({ keepState: false })
 	}
 
-	async configUpdated(config: ModuleConfig): Promise<void> {
-		this.config = this.applyConfigDefaults(config)
+	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
+		this.config = this.applyConfigDefaults(config, secrets)
 		await this.reconnect()
 	}
 
-	applyConfigDefaults(config: Partial<ModuleConfig> | null | undefined): ModuleConfig {
+	applyConfigDefaults(
+		config: Partial<ModuleConfig> | null | undefined,
+		secrets: Partial<ModuleSecrets> | null | undefined = {},
+	): ModuleConfig {
 		const safeConfig = config || {}
+		const safeSecrets = secrets || {}
 		const authMode: ModuleConfig['authMode'] =
 			asString(safeConfig.authMode).toLowerCase() === 'credentials' ? 'credentials' : 'apiKey'
 		return {
@@ -191,7 +196,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig> {
 			authMode,
 			apiKey: asString(safeConfig.apiKey),
 			username: asString(safeConfig.username),
-			password: asString(safeConfig.password),
+			password: asString(safeSecrets.password || safeConfig.password),
 		}
 	}
 
