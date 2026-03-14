@@ -187,6 +187,53 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				return Boolean(self.users.get(userId)?.talkLocked)
 			},
 		},
+		target_muted: {
+			type: 'boolean',
+			name: 'Target muted',
+			defaultStyle: {
+				bgcolor: WEB_COLORS.red,
+				color: WEB_COLORS.redText,
+			},
+			options: [
+				{
+					type: 'dropdown',
+					id: 'userId',
+					label: 'Operator User',
+					default: defaultUserId,
+					choices: self.userChoices,
+				},
+				{
+					type: 'dropdown',
+					id: 'targetType',
+					label: 'Target Type',
+					default: 'user',
+					choices: [
+						{ id: 'user', label: 'user' },
+						{ id: 'conference', label: 'conference' },
+						{ id: 'feed', label: 'feed' },
+					],
+				},
+				{
+					type: 'number',
+					id: 'targetId',
+					label: 'Target ID',
+					default: defaultUserId,
+					min: 1,
+					max: 100000,
+				},
+			],
+			callback: (feedback) => {
+				const operatorUserId = self.resolveChoiceId(feedback.options.userId)
+				if (!operatorUserId) return false
+				if (!self.users.get(operatorUserId)?.online) return false
+
+				const targetId = self.resolveChoiceId(feedback.options.targetId)
+				if (!targetId) return false
+				const targetType = asString(feedback.options.targetType).toLowerCase()
+
+				return self.isTargetMuted(operatorUserId, targetType, targetId)
+			},
+		},
 		target_online: {
 			type: 'boolean',
 			name: 'Target online',

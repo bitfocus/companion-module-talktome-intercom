@@ -23,13 +23,17 @@ import type {
 	NormalizedTarget,
 	PresetTarget,
 	ScopeMode,
+	TargetAudioCommandPayload,
+	TargetAudioState,
 	UserState,
 } from './types.js'
 
 const PLACEHOLDER_USER_ID = -1
 const PLACEHOLDER_CONFERENCE_ID = -1
+const PLACEHOLDER_FEED_ID = -1
 const FIXED_HTTP_TIMEOUT_MS = 5000
 const FIXED_COMMAND_WAIT_MS = 1500
+const FIXED_VOLUME_STEP = 0.05
 
 const DEFAULT_CONFIG: ModuleConfig = {
 	host: 'localhost',
@@ -48,6 +52,8 @@ const WEB_COLORS = {
 	purpleText: combineRgb(237, 233, 254),
 	green: combineRgb(34, 197, 94),
 	greenText: combineRgb(187, 247, 208),
+	red: combineRgb(185, 28, 28),
+	redText: combineRgb(254, 242, 242),
 	offline: combineRgb(15, 23, 42),
 	offlineText: combineRgb(148, 163, 184),
 	baseTarget: combineRgb(50, 50, 50),
@@ -113,6 +119,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	lastAddressedBy: Map<number, AddressedEntry>
 	userChoices: ChoiceItem[]
 	conferenceChoices: ChoiceItem[]
+	feedChoices: ChoiceItem[]
 	cutCameraUser: string
 	connectionState: ConnectionState
 	authToken: string
@@ -140,6 +147,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 
 		this.userChoices = [{ id: PLACEHOLDER_USER_ID, label: 'No users available' }]
 		this.conferenceChoices = [{ id: PLACEHOLDER_CONFERENCE_ID, label: 'No conferences available' }]
+		this.feedChoices = [{ id: PLACEHOLDER_FEED_ID, label: 'No feeds available' }]
 
 		this.cutCameraUser = ''
 		this.connectionState = 'disconnected'
@@ -781,6 +789,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_muted',
 			'target_online',
 			'target_offline',
 			'target_addressed_now',
@@ -881,6 +890,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.refreshDefinitions()
 			this.updateVariableValuesFromState()
 			this.checkFeedbacks(
+				'target_muted',
 				'target_online',
 				'target_offline',
 				'user_talking_target',
@@ -932,6 +942,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_muted',
 			'target_online',
 			'target_offline',
 			'target_addressed_now',
@@ -952,6 +963,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			socketId: '',
 			currentTarget: null,
 			lastTarget: null,
+			targetAudioStates: [],
 			lastSpokeAt: null,
 			updatedAt: null,
 		}
@@ -968,8 +980,39 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		target.lastTarget = this.normalizeStateTarget(raw.lastTarget)
 		target.lastCommandId = asString(raw.lastCommandId)
 		target.lastCommandResult = asString(raw.lastCommandResult)
+		target.targetAudioStates = this.normalizeTargetAudioStates(raw.targetAudioStates)
 		target.lastSpokeAt = this.normalizeTimestamp(raw.lastSpokeAt)
 		target.updatedAt = this.normalizeTimestamp(raw.updatedAt)
+	}
+
+	normalizeTargetAudioState(rawState: unknown): TargetAudioState | null {
+		const raw = (rawState ?? {}) as Record<string, unknown>
+		const targetType = asString(raw.targetType).toLowerCase()
+		if (targetType !== 'user' && targetType !== 'conference' && targetType !== 'feed') return null
+
+		const targetId = Number(raw.targetId)
+		if (!Number.isFinite(targetId)) return null
+
+		return {
+			targetType: targetType as TargetAudioState['targetType'],
+			targetId,
+			muted: Boolean(raw.muted),
+		}
+	}
+
+	normalizeTargetAudioStates(rawStates: unknown): TargetAudioState[] {
+		if (!Array.isArray(rawStates)) return []
+		const normalized: TargetAudioState[] = []
+		const seen = new Set<string>()
+		for (const rawState of rawStates) {
+			const state = this.normalizeTargetAudioState(rawState)
+			if (!state) continue
+			const key = `${state.targetType}:${state.targetId}`
+			if (seen.has(key)) continue
+			seen.add(key)
+			normalized.push(state)
+		}
+		return normalized
 	}
 
 	normalizeStateTarget(rawTarget: unknown): NormalizedTarget | null {
@@ -1199,6 +1242,25 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		return false
 	}
 
+	isTargetMuted(userId: unknown, targetType: unknown, targetId: unknown): boolean {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return false
+
+		const user = this.users.get(normalizedUserId)
+		if (!user?.online) return false
+
+		const normalizedTargetType = asString(targetType).toLowerCase()
+		const normalizedTargetId = Number(targetId)
+		if (!Number.isFinite(normalizedTargetId)) return false
+
+		return user.targetAudioStates.some(
+			(entry) =>
+				asString(entry.targetType).toLowerCase() === normalizedTargetType &&
+				Number(entry.targetId) === normalizedTargetId &&
+				Boolean(entry.muted),
+		)
+	}
+
 	resolveAddressedUsersForTarget(target: NormalizedTarget | null, speakerUserId: unknown): number[] {
 		if (!target) return []
 		if (target.type === 'user') {
@@ -1330,6 +1392,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_muted',
 			'target_online',
 			'target_offline',
 			'target_addressed_now',
@@ -1347,7 +1410,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const sortedUsers = this.getScopedUsers()
 		this.userChoices =
 			sortedUsers.length > 0
-				? sortedUsers.map((user) => ({ id: user.id, label: `${user.name} (#${user.id})` }))
+				? sortedUsers.map((user) => ({ id: user.id, label: `${user.name}` }))
 				: [{ id: PLACEHOLDER_USER_ID, label: 'No users available' }]
 
 		const sortedConferences = Array.from(this.conferences.values()).sort((a, b) => a.name.localeCompare(b.name))
@@ -1355,9 +1418,18 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			sortedConferences.length > 0
 				? sortedConferences.map((conference) => ({
 						id: conference.id,
-						label: `${conference.name} (#${conference.id})`,
+						label: `${conference.name}`,
 					}))
 				: [{ id: PLACEHOLDER_CONFERENCE_ID, label: 'No conferences available' }]
+
+		const sortedFeeds = Array.from(this.feeds.values()).sort((a, b) => a.name.localeCompare(b.name))
+		this.feedChoices =
+			sortedFeeds.length > 0
+				? sortedFeeds.map((feed) => ({
+						id: feed.id,
+						label: `${feed.name}`,
+					}))
+				: [{ id: PLACEHOLDER_FEED_ID, label: 'No feeds available' }]
 	}
 
 	refreshDefinitions() {
@@ -1458,10 +1530,106 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		}
 	}
 
+	async executeTargetAudioCommand(options: Record<string, unknown>): Promise<void> {
+		const userId = this.resolveChoiceId(options.userId)
+		if (!userId) {
+			throw new Error('Invalid user')
+		}
+		if (!this.canControlUser(userId)) {
+			const error: CompanionError = new Error('Forbidden for this companion account')
+			error.authFailure = true
+			throw error
+		}
+
+		const action = asString(options.action) || 'volume-up'
+		const targetType = asString(options.targetType).toLowerCase() || 'conference'
+
+		let targetId: number | null = null
+		if (targetType === 'conference') {
+			targetId = this.resolveChoiceId(options.targetConferenceId)
+			if (!targetId) {
+				throw new Error('Invalid conference')
+			}
+		} else if (targetType === 'user') {
+			targetId = this.resolveChoiceId(options.targetUserId)
+			if (!targetId) {
+				throw new Error('Invalid target user')
+			}
+		} else if (targetType === 'feed') {
+			targetId = this.resolveChoiceId(options.targetFeedId)
+			if (!targetId) {
+				throw new Error('Invalid feed')
+			}
+		} else {
+			throw new Error('Invalid target type')
+		}
+
+		const payload: TargetAudioCommandPayload = {
+			action,
+			targetType: targetType as TargetAudioCommandPayload['targetType'],
+			targetId,
+		}
+
+		if (action === 'volume-up' || action === 'volume-down') {
+			payload.step = FIXED_VOLUME_STEP
+		}
+
+		let response: AxiosResponse
+		try {
+			response = await this.apiRequest('POST', `/api/v1/companion/users/${userId}/target-audio`, payload)
+		} catch (error) {
+			const companionError = toCompanionError(error)
+			if (companionError.statusCode === 409) {
+				const result = asObject(companionError.responseData)
+				const nestedResult = asObject(result.result)
+				const commandId = asString(result.commandId || nestedResult.commandId)
+				const reason = this.normalizeCommandReason(nestedResult.reason || result.error || companionError.message)
+				this.lastCommand = {
+					commandId,
+					status: 'failed',
+					reason,
+					userId: String(userId),
+					targetType,
+					targetId: String(targetId),
+					at: Date.now(),
+				}
+				this.updateVariableValuesFromState()
+				this.checkFeedbacks('last_command_failed')
+				if (reason === 'Target offline') {
+					this.triggerTargetOfflineFeedbackFlash()
+				}
+				return
+			}
+			throw companionError
+		}
+
+		const result = asObject(response.data)
+		const nestedResult = asObject(result.result)
+		const status = asString(result.status) || (response.status === 202 ? 'pending' : 'ok')
+		const reason = this.normalizeCommandReason(nestedResult.reason || result.error)
+		const commandId = asString(result.commandId || nestedResult.commandId)
+
+		this.lastCommand = {
+			commandId,
+			status,
+			reason,
+			userId: String(userId),
+			targetType,
+			targetId: String(targetId),
+			at: Date.now(),
+		}
+		this.updateVariableValuesFromState()
+		this.checkFeedbacks('last_command_failed')
+		if (reason === 'Target offline') {
+			this.triggerTargetOfflineFeedbackFlash()
+		}
+	}
+
 	initActions() {
 		return defineActions(this, {
 			PLACEHOLDER_USER_ID,
 			PLACEHOLDER_CONFERENCE_ID,
+			PLACEHOLDER_FEED_ID,
 			InstanceStatus,
 			asString,
 		})

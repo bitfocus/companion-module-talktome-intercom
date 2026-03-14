@@ -403,6 +403,35 @@ async function main() {
 		await commandResultWait
 		resultLines.push('socket command-result event on failed talk: ok')
 
+		const targetAudioCommandResultWait = waitForSocketEvent(
+			socket,
+			'command-result',
+			(payload) =>
+				Number(payload?.userId) === operatorAId &&
+				payload?.ok === false &&
+				String(payload?.reason || '')
+					.toLowerCase()
+					.includes('user not connected'),
+		)
+		const targetAudioOffline = await http.post(
+			`/api/v1/companion/users/${operatorAId}/target-audio`,
+			{
+				action: 'mute-toggle',
+				targetType: 'conference',
+				targetId: conferenceAId,
+				waitMs: 400,
+			},
+			{
+				headers: { 'x-api-key': apiKey },
+			},
+		)
+		assert(targetAudioOffline.status === 404, 'offline target-audio should return 404 user not connected', {
+			status: targetAudioOffline.status,
+			body: targetAudioOffline.data,
+		})
+		await targetAudioCommandResultWait
+		resultLines.push('socket command-result event on failed target-audio: ok')
+
 		const durationMs = Date.now() - startedAt
 		console.log(`Smoke test passed in ${durationMs}ms`)
 		for (const line of resultLines) {

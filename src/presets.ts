@@ -169,6 +169,18 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 						},
 					},
 					{
+						feedbackId: 'target_muted',
+						options: {
+							userId,
+							targetType: target.targetType,
+							targetId: target.targetId,
+						},
+						style: {
+							bgcolor: WEB_COLORS.red,
+							color: WEB_COLORS.redText,
+						},
+					},
+					{
 						feedbackId: 'target_addressed_now',
 						options: {
 							userId,

@@ -9,6 +9,7 @@ export type ConnectionState =
 	| 'connected'
 
 export type TargetType = 'user' | 'conference'
+export type AudioTargetType = 'user' | 'conference' | 'feed'
 
 export interface ModuleConfig {
 	host: string
@@ -48,6 +49,12 @@ export interface AddressedEntry {
 	at: number
 }
 
+export interface TargetAudioState {
+	targetType: AudioTargetType
+	targetId: number
+	muted: boolean
+}
+
 export interface UserState {
 	id: number
 	name: string
@@ -59,6 +66,7 @@ export interface UserState {
 	lastTarget: NormalizedTarget | null
 	lastCommandId?: string
 	lastCommandResult?: string
+	targetAudioStates: TargetAudioState[]
 	lastSpokeAt: number | null
 	updatedAt: number | null
 }
@@ -78,6 +86,13 @@ export interface CommandPayload {
 	targetType: string
 	waitMs: number
 	targetId?: number
+}
+
+export interface TargetAudioCommandPayload {
+	action: string
+	targetType: AudioTargetType
+	targetId: number
+	step?: number
 }
 
 export type CompanionError = Error & {
