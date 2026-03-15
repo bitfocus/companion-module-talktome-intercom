@@ -1,10 +1,87 @@
 import type { TalkToMeCompanionInstance } from './main.js'
 
+const TARGET_VOLUME_BAR_SEGMENTS = 10
+const TARGET_VOLUME_BAR_MARGIN_X = 7
+const TARGET_VOLUME_BAR_MARGIN_BOTTOM = 7
+const TARGET_VOLUME_BAR_HEIGHT = 8
+
 type FeedbackDeps = {
 	PLACEHOLDER_USER_ID: number
 	combineRgb: (r: number, g: number, b: number) => number
 	WEB_COLORS: Record<string, number>
 	asString: (value: unknown) => string
+}
+
+function clampUnitInterval(rawValue: unknown, fallback = 0): number {
+	const value = Number(rawValue)
+	if (!Number.isFinite(value)) return fallback
+	return Math.min(1, Math.max(0, value))
+}
+
+function fillRect(
+	buffer: Uint8Array,
+	bufferWidth: number,
+	bufferHeight: number,
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	rgba: readonly [number, number, number, number],
+): void {
+	const startX = Math.max(0, Math.floor(x))
+	const startY = Math.max(0, Math.floor(y))
+	const endX = Math.min(bufferWidth, Math.ceil(x + width))
+	const endY = Math.min(bufferHeight, Math.ceil(y + height))
+	if (startX >= endX || startY >= endY) return
+
+	for (let row = startY; row < endY; row += 1) {
+		for (let col = startX; col < endX; col += 1) {
+			const offset = (row * bufferWidth + col) * 4
+			buffer[offset + 0] = rgba[0]
+			buffer[offset + 1] = rgba[1]
+			buffer[offset + 2] = rgba[2]
+			buffer[offset + 3] = rgba[3]
+		}
+	}
+}
+
+function createTargetVolumeBarImage(width: number, height: number, rawVolume: unknown) {
+	const safeWidth = Math.max(1, Math.floor(width))
+	const safeHeight = Math.max(1, Math.floor(height))
+	const normalizedVolume = clampUnitInterval(rawVolume, 0.9)
+	const segmentGap = safeWidth >= 80 ? 2 : 1
+	const maxBarWidth = Math.max(20, safeWidth - TARGET_VOLUME_BAR_MARGIN_X * 2)
+	const segmentWidth = Math.max(
+		2,
+		Math.floor((maxBarWidth - segmentGap * (TARGET_VOLUME_BAR_SEGMENTS - 1)) / TARGET_VOLUME_BAR_SEGMENTS),
+	)
+	const barWidth = segmentWidth * TARGET_VOLUME_BAR_SEGMENTS + segmentGap * (TARGET_VOLUME_BAR_SEGMENTS - 1)
+	const barHeight = Math.max(6, Math.min(TARGET_VOLUME_BAR_HEIGHT, safeHeight - TARGET_VOLUME_BAR_MARGIN_BOTTOM))
+	const buffer = new Uint8Array(barWidth * barHeight * 4)
+	const filledColor: readonly [number, number, number, number] = [255, 255, 255, 236]
+	const emptyColor: readonly [number, number, number, number] = [255, 255, 255, 72]
+
+	for (let segmentIndex = 0; segmentIndex < TARGET_VOLUME_BAR_SEGMENTS; segmentIndex += 1) {
+		const x = segmentIndex * (segmentWidth + segmentGap)
+		const segmentFill = Math.min(1, Math.max(0, normalizedVolume * TARGET_VOLUME_BAR_SEGMENTS - segmentIndex))
+		const filledWidth = Math.min(segmentWidth, Math.max(0, Math.round(segmentFill * segmentWidth)))
+
+		fillRect(buffer, barWidth, barHeight, x, 0, segmentWidth, barHeight, emptyColor)
+		if (filledWidth > 0) {
+			fillRect(buffer, barWidth, barHeight, x, 0, filledWidth, barHeight, filledColor)
+		}
+	}
+
+	return {
+		imageBuffer: buffer,
+		imageBufferEncoding: { pixelFormat: 'RGBA' as const },
+		imageBufferPosition: {
+			x: Math.max(0, Math.floor((safeWidth - barWidth) / 2)),
+			y: Math.max(0, safeHeight - barHeight - TARGET_VOLUME_BAR_MARGIN_BOTTOM),
+			width: barWidth,
+			height: barHeight,
+		},
+	}
 }
 
 export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDeps): void {
@@ -232,6 +309,62 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				const targetType = asString(feedback.options.targetType).toLowerCase()
 
 				return self.isTargetMuted(operatorUserId, targetType, targetId)
+			},
+		},
+		target_volume_bar: {
+			type: 'advanced',
+			name: 'Target volume bar',
+			description: 'Draw the current target volume as a segmented bar',
+			options: [
+				{
+					type: 'dropdown',
+					id: 'userId',
+					label: 'Operator User',
+					default: defaultUserId,
+					choices: self.userChoices,
+				},
+				{
+					type: 'dropdown',
+					id: 'targetType',
+					label: 'Target Type',
+					default: 'user',
+					choices: [
+						{ id: 'user', label: 'user' },
+						{ id: 'conference', label: 'conference' },
+						{ id: 'feed', label: 'feed' },
+					],
+				},
+				{
+					type: 'number',
+					id: 'targetId',
+					label: 'Target ID',
+					default: defaultUserId,
+					min: 1,
+					max: 100000,
+				},
+			],
+			callback: (feedback) => {
+				const image = feedback.image
+				if (!image?.width || !image?.height) return {}
+				if (self.connectionState !== 'connected') return {}
+
+				const operatorUserId = self.resolveChoiceId(feedback.options.userId)
+				if (!operatorUserId) return {}
+				if (!self.users.get(operatorUserId)?.online) return {}
+
+				const targetId = self.resolveChoiceId(feedback.options.targetId)
+				if (!targetId) return {}
+				const targetType = asString(feedback.options.targetType).toLowerCase()
+
+				if (targetType !== 'feed' && !self.resolveTargetOnline(targetType, targetId)) {
+					return {}
+				}
+
+				return createTargetVolumeBarImage(
+					image.width,
+					image.height,
+					self.getTargetVolume(operatorUserId, targetType, targetId),
+				)
 			},
 		},
 		target_online: {

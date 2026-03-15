@@ -33,7 +33,9 @@ const PLACEHOLDER_CONFERENCE_ID = -1
 const PLACEHOLDER_FEED_ID = -1
 const FIXED_HTTP_TIMEOUT_MS = 5000
 const FIXED_COMMAND_WAIT_MS = 1500
-const FIXED_VOLUME_STEP = 0.05
+const FIXED_VOLUME_STEP = 0.04
+const DEFAULT_TARGET_VOLUME = 0.9
+const TARGET_VOLUME_BAR_SEGMENTS = 10
 
 const DEFAULT_CONFIG: ModuleConfig = {
 	host: 'localhost',
@@ -74,6 +76,19 @@ function truncateLabel(text: unknown, maxLength = 12): string {
 	const safe = asString(text)
 	if (safe.length <= maxLength) return safe
 	return `${safe.slice(0, Math.max(0, maxLength - 1))}.`
+}
+
+function clampUnitInterval(rawValue: unknown, fallback = 0): number {
+	const value = Number(rawValue)
+	if (!Number.isFinite(value)) return fallback
+	return Math.min(1, Math.max(0, value))
+}
+
+function formatVolumeBar(rawValue: unknown, segments = TARGET_VOLUME_BAR_SEGMENTS): string {
+	const safeSegments = Math.max(1, Math.round(Number(segments) || TARGET_VOLUME_BAR_SEGMENTS))
+	const clamped = clampUnitInterval(rawValue, DEFAULT_TARGET_VOLUME)
+	const filled = Math.round(clamped * safeSegments)
+	return `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, safeSegments - filled))}`
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -180,7 +195,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.connectionState = 'disconnected'
 		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
 		this.updateVariableValuesFromState()
-		this.checkFeedbacks('connection_ok', 'module_not_running')
+		this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 		await this.cleanup({ keepState: false })
 	}
 
@@ -379,7 +394,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		if (!this.hasRequiredConfig()) {
 			this.connectionState = 'bad_config'
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 			this.updateStatus(InstanceStatus.BadConfig, 'Host and authentication fields are required')
 			return
 		}
@@ -400,14 +415,14 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 					this.updateStatus(InstanceStatus.ConnectionFailure, companionError.message)
 				}
 				this.updateVariableValuesFromState()
-				this.checkFeedbacks('connection_ok', 'module_not_running')
+				this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 			}
 		}
 
 		if (this.connectionState === 'disconnected') {
 			this.connectionState = 'connecting'
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 			this.updateStatus(InstanceStatus.Connecting, 'Connecting to talktome ...')
 		}
 
@@ -428,7 +443,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.connectionState = 'disconnected'
 		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
 		this.updateVariableValuesFromState()
-		this.checkFeedbacks('connection_ok', 'module_not_running')
+		this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 
 		if (this.pollTimer) {
 			clearInterval(this.pollTimer)
@@ -607,7 +622,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.connectionState = 'connected'
 				this.updateStatus(InstanceStatus.Ok)
 				this.updateVariableValuesFromState()
-				this.checkFeedbacks('connection_ok', 'module_not_running')
+				this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 				this.ensureRealtimeConnection()
 			}
 		} catch (error) {
@@ -620,7 +635,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.updateStatus(InstanceStatus.ConnectionFailure, companionError.message)
 			}
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 
 			if (reason !== 'poll') {
 				this.log('error', `Snapshot request failed: ${companionError.message}`)
@@ -654,7 +669,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.connectionState = 'connected'
 			this.updateStatus(InstanceStatus.Ok)
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 			this.socket?.emit('request-snapshot')
 		})
 
@@ -662,7 +677,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.connectionState = 'disconnected'
 			this.updateStatus(InstanceStatus.Disconnected, reason || 'Socket disconnected')
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 		})
 
 		this.socket.on('connect_error', (error) => {
@@ -686,7 +701,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.updateStatus(InstanceStatus.ConnectionFailure, message)
 			}
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
 		})
 
 		this.socket.on('snapshot', (snapshot) => {
@@ -789,6 +804,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_volume_bar',
 			'target_muted',
 			'target_online',
 			'target_offline',
@@ -804,7 +820,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	normalizePresetTargetRow(rawTarget: unknown): PresetTarget | null {
 		const raw = (rawTarget ?? {}) as Record<string, unknown>
 		const targetType = asString(raw.targetType).toLowerCase()
-		if (targetType !== 'conference' && targetType !== 'user') return null
+		if (targetType !== 'conference' && targetType !== 'user' && targetType !== 'feed') return null
 
 		const targetId = Number(raw.targetId)
 		if (!Number.isFinite(targetId)) return null
@@ -890,6 +906,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.refreshDefinitions()
 			this.updateVariableValuesFromState()
 			this.checkFeedbacks(
+				'target_volume_bar',
 				'target_muted',
 				'target_online',
 				'target_offline',
@@ -942,6 +959,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_volume_bar',
 			'target_muted',
 			'target_online',
 			'target_offline',
@@ -993,10 +1011,14 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const targetId = Number(raw.targetId)
 		if (!Number.isFinite(targetId)) return null
 
+		const rawVolume = Number(raw.volume)
+		const volume = Number.isFinite(rawVolume) ? clampUnitInterval(rawVolume) : null
+
 		return {
 			targetType: targetType as TargetAudioState['targetType'],
 			targetId,
 			muted: Boolean(raw.muted),
+			volume,
 		}
 	}
 
@@ -1042,6 +1064,24 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	replyFromVariableToken(userId: number | string): string {
 		const instanceId = asString(this.id || this.label) || 'talktome'
 		return `$(${instanceId}:${this.replyFromVariableId(userId)})`
+	}
+
+	targetVolumePercentVariableId(userId: number | string, targetType: string, targetId: number | string): string {
+		return `target_volume_pct_user_${Number(userId)}_${asString(targetType).toLowerCase()}_${Number(targetId)}`
+	}
+
+	targetVolumePercentVariableToken(userId: number | string, targetType: string, targetId: number | string): string {
+		const instanceId = asString(this.id || this.label) || 'talktome'
+		return `$(${instanceId}:${this.targetVolumePercentVariableId(userId, targetType, targetId)})`
+	}
+
+	targetVolumeBarVariableId(userId: number | string, targetType: string, targetId: number | string): string {
+		return `target_volume_bar_user_${Number(userId)}_${asString(targetType).toLowerCase()}_${Number(targetId)}`
+	}
+
+	targetVolumeBarVariableToken(userId: number | string, targetType: string, targetId: number | string): string {
+		const instanceId = asString(this.id || this.label) || 'talktome'
+		return `$(${instanceId}:${this.targetVolumeBarVariableId(userId, targetType, targetId)})`
 	}
 
 	resolveUserIdFromTargetId(rawTargetId: unknown): number | null {
@@ -1253,12 +1293,43 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const normalizedTargetId = Number(targetId)
 		if (!Number.isFinite(normalizedTargetId)) return false
 
-		return user.targetAudioStates.some(
-			(entry) =>
-				asString(entry.targetType).toLowerCase() === normalizedTargetType &&
-				Number(entry.targetId) === normalizedTargetId &&
-				Boolean(entry.muted),
+		return Boolean(this.getTargetAudioState(normalizedUserId, normalizedTargetType, normalizedTargetId)?.muted)
+	}
+
+	getTargetAudioState(userId: unknown, targetType: unknown, targetId: unknown): TargetAudioState | null {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return null
+
+		const user = this.users.get(normalizedUserId)
+		if (!user) return null
+
+		const normalizedTargetType = asString(targetType).toLowerCase()
+		const normalizedTargetId = Number(targetId)
+		if (!Number.isFinite(normalizedTargetId)) return null
+
+		return (
+			user.targetAudioStates.find(
+				(entry) =>
+					asString(entry.targetType).toLowerCase() === normalizedTargetType &&
+					Number(entry.targetId) === normalizedTargetId,
+			) || null
 		)
+	}
+
+	getTargetVolume(userId: unknown, targetType: unknown, targetId: unknown): number {
+		const state = this.getTargetAudioState(userId, targetType, targetId)
+		if (state?.volume === null || state?.volume === undefined) {
+			return DEFAULT_TARGET_VOLUME
+		}
+		return clampUnitInterval(state.volume, DEFAULT_TARGET_VOLUME)
+	}
+
+	getTargetVolumePercent(userId: unknown, targetType: unknown, targetId: unknown): number {
+		return Math.round(this.getTargetVolume(userId, targetType, targetId) * 100)
+	}
+
+	getTargetVolumeBar(userId: unknown, targetType: unknown, targetId: unknown): string {
+		return formatVolumeBar(this.getTargetVolume(userId, targetType, targetId))
 	}
 
 	resolveAddressedUsersForTarget(target: NormalizedTarget | null, speakerUserId: unknown): number[] {
@@ -1392,6 +1463,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_volume_bar',
 			'target_muted',
 			'target_online',
 			'target_offline',
@@ -1655,6 +1727,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	initPresets() {
 		return definePresets(this, {
 			PLACEHOLDER_CONFERENCE_ID,
+			PLACEHOLDER_FEED_ID,
 			WEB_COLORS,
 			truncateLabel,
 			combineRgb,

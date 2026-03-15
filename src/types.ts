@@ -36,7 +36,7 @@ export interface NormalizedTarget {
 }
 
 export interface PresetTarget {
-	targetType: TargetType
+	targetType: AudioTargetType
 	targetId: number
 	name: string
 }
@@ -53,6 +53,7 @@ export interface TargetAudioState {
 	targetType: AudioTargetType
 	targetId: number
 	muted: boolean
+	volume: number | null
 }
 
 export interface UserState {

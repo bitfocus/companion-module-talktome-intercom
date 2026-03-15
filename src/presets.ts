@@ -1,22 +1,23 @@
-import type { CompanionPresetDefinitions } from '@companion-module/base'
+import type { CompanionPresetDefinitions, CompanionPresetFeedback } from '@companion-module/base'
 import type { TalkToMeCompanionInstance } from './main.js'
 
 type PresetDeps = {
 	PLACEHOLDER_CONFERENCE_ID: number
+	PLACEHOLDER_FEED_ID: number
 	WEB_COLORS: Record<string, number>
 	truncateLabel: (text: unknown, maxLength?: number) => string
 	combineRgb: (r: number, g: number, b: number) => number
 }
 
 export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): void {
-	const { PLACEHOLDER_CONFERENCE_ID, WEB_COLORS, truncateLabel, combineRgb } = deps
+	const { PLACEHOLDER_CONFERENCE_ID, PLACEHOLDER_FEED_ID, WEB_COLORS, truncateLabel, combineRgb } = deps
 	const presets: CompanionPresetDefinitions = {}
 
 	const users = self.getScopedUsers()
 	for (const user of users) {
 		const userId = user.id
 		const userName = user.name || `User ${userId}`
-		const category = `Users/${userName}`
+		const category = userName
 		const defaultConferenceId = self.conferenceChoices[0]?.id ?? PLACEHOLDER_CONFERENCE_ID
 		const userTargets = self.userTargets.get(userId) || []
 
@@ -116,6 +117,199 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 			}
 
 			const targetLabel = truncateLabel(target.name, 10)
+			const audioPresetKey = `user_${userId}_target_${target.targetType}_${target.targetId}_audio`
+			const audioCommandOptions = {
+				userId,
+				targetType: target.targetType,
+				targetConferenceId: defaultConferenceId,
+				targetUserId: userId,
+				targetFeedId: target.targetType === 'feed' ? target.targetId : PLACEHOLDER_FEED_ID,
+			}
+			if (target.targetType === 'conference') {
+				audioCommandOptions.targetConferenceId = target.targetId
+			} else if (target.targetType === 'user') {
+				audioCommandOptions.targetUserId = target.targetId
+			}
+			const talkCommandOptions =
+				target.targetType === 'feed'
+					? null
+					: {
+							userId,
+							targetType: target.targetType,
+							targetConferenceId: target.targetType === 'conference' ? target.targetId : defaultConferenceId,
+							targetUserId: target.targetType === 'user' ? target.targetId : userId,
+						}
+
+			const audioFeedbacks: CompanionPresetFeedback[] = [
+				{
+					feedbackId: 'connection_ok',
+					options: {},
+					style: {
+						color: combineRgb(255, 255, 255),
+						bgcolor: WEB_COLORS.baseTarget,
+					},
+				},
+				{
+					feedbackId: 'target_volume_bar',
+					options: {
+						userId,
+						targetType: target.targetType,
+						targetId: target.targetId,
+					},
+				},
+				{
+					feedbackId: 'target_muted',
+					options: {
+						userId,
+						targetType: target.targetType,
+						targetId: target.targetId,
+					},
+					style: {
+						bgcolor: WEB_COLORS.red,
+						color: WEB_COLORS.redText,
+					},
+				},
+				{
+					feedbackId: 'operator_not_logged_in',
+					options: { userId },
+					style: {
+						bgcolor: WEB_COLORS.offline,
+						color: WEB_COLORS.offlineText,
+						text: 'LOGIN TO CTRL',
+					},
+				},
+				{
+					feedbackId: 'module_not_running',
+					options: {},
+					style: {
+						bgcolor: WEB_COLORS.offline,
+						color: WEB_COLORS.offlineText,
+						text: 'NO\\nCONNECTION',
+					},
+				},
+			]
+
+			if (target.targetType !== 'feed') {
+				audioFeedbacks.splice(
+					1,
+					0,
+					{
+						feedbackId: 'target_offline',
+						options: {
+							userId,
+							targetType: target.targetType,
+							targetId: target.targetId,
+						},
+						style: {
+							bgcolor: WEB_COLORS.offline,
+							color: WEB_COLORS.offlineText,
+						},
+					},
+					{
+						feedbackId: 'target_online',
+						options: {
+							userId,
+							targetType: target.targetType,
+							targetId: target.targetId,
+						},
+						style: {
+							bgcolor: WEB_COLORS.blue,
+							color: WEB_COLORS.blueText,
+						},
+					},
+					{
+						feedbackId: 'last_target_offline',
+						options: {
+							userId,
+							targetType: target.targetType,
+							targetId: target.targetId,
+						},
+						style: {
+							bgcolor: WEB_COLORS.offline,
+							color: WEB_COLORS.offlineText,
+							text: 'TARGET\\nOFFLINE',
+						},
+					},
+				)
+				audioFeedbacks.splice(audioFeedbacks.length - 2, 0, {
+					feedbackId: 'user_talking_target',
+					options: {
+						userId,
+						targetType: target.targetType,
+						targetId: target.targetId,
+					},
+					style: {
+						bgcolor: WEB_COLORS.purple,
+						color: WEB_COLORS.purpleText,
+					},
+				})
+			}
+
+			presets[audioPresetKey] = {
+				type: 'button',
+				category,
+				name: `${userName} -> ${target.name} Audio`,
+				style: {
+					text: targetLabel,
+					size: 14,
+					alignment: 'center:center',
+					color: WEB_COLORS.offlineText,
+					bgcolor: WEB_COLORS.offline,
+				},
+				options: {
+					rotaryActions: true,
+				},
+				feedbacks: audioFeedbacks,
+				steps: [
+					{
+						down: talkCommandOptions
+							? [
+									{
+										actionId: 'send_talk_command',
+										options: {
+											...talkCommandOptions,
+											action: 'press',
+										},
+									},
+								]
+							: [],
+						up: talkCommandOptions
+							? [
+									{
+										actionId: 'send_talk_command',
+										options: {
+											...talkCommandOptions,
+											action: 'release',
+										},
+									},
+								]
+							: [],
+						rotate_left: [
+							{
+								actionId: 'change_target_volume',
+								options: {
+									...audioCommandOptions,
+									action: 'volume-down',
+								},
+							},
+						],
+						rotate_right: [
+							{
+								actionId: 'change_target_volume',
+								options: {
+									...audioCommandOptions,
+									action: 'volume-up',
+								},
+							},
+						],
+					},
+				],
+			}
+
+			if (target.targetType === 'feed') {
+				continue
+			}
+
 			const presetKey = `user_${userId}_target_${target.targetType}_${target.targetId}_ptt`
 			const commandOptions = {
 				userId,

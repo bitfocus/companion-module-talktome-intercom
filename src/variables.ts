@@ -25,6 +25,23 @@ export function initVariableDefinitions(self: TalkToMeCompanionInstance, deps: V
 			variableId: self.replyFromVariableId(userId),
 			name: `reply from (${userName})`,
 		})
+
+		const seenTargetKeys = new Set<string>()
+		for (const target of self.userTargets.get(userId) || []) {
+			const targetKey = `${target.targetType}:${target.targetId}`
+			if (seenTargetKeys.has(targetKey)) continue
+			seenTargetKeys.add(targetKey)
+
+			const targetName = asString(target.name) || `${target.targetType} ${target.targetId}`
+			definitions.push({
+				variableId: self.targetVolumePercentVariableId(userId, target.targetType, target.targetId),
+				name: `target volume % (${userName} -> ${targetName})`,
+			})
+			definitions.push({
+				variableId: self.targetVolumeBarVariableId(userId, target.targetType, target.targetId),
+				name: `target volume bar (${userName} -> ${targetName})`,
+			})
+		}
 	}
 
 	self.setVariableDefinitions(definitions)
@@ -53,6 +70,21 @@ export function updateVariableValuesFromState(self: TalkToMeCompanionInstance): 
 		const userId = Number(user?.id)
 		if (!Number.isFinite(userId)) continue
 		values[self.replyFromVariableId(userId)] = self.formatReplyTargetForUser(userId)
+
+		const seenTargetKeys = new Set<string>()
+		for (const target of self.userTargets.get(userId) || []) {
+			const targetKey = `${target.targetType}:${target.targetId}`
+			if (seenTargetKeys.has(targetKey)) continue
+			seenTargetKeys.add(targetKey)
+
+			values[self.targetVolumePercentVariableId(userId, target.targetType, target.targetId)] =
+				self.getTargetVolumePercent(userId, target.targetType, target.targetId)
+			values[self.targetVolumeBarVariableId(userId, target.targetType, target.targetId)] = self.getTargetVolumeBar(
+				userId,
+				target.targetType,
+				target.targetId,
+			)
+		}
 	}
 
 	self.setVariableValues(values)

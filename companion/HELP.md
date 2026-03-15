@@ -17,20 +17,27 @@ If the talktome server uses a self-signed certificate, enable the matching TLS o
 ## What The Module Does
 
 - Sends talk commands to talktome users
-- Changes target volume in fixed 5% steps and toggles target mute
+- Changes target volume in fixed 4% steps and toggles target mute
 - Shows live feedback for online state, talking state, talk lock and on-air state
 - Builds presets automatically per available user
 
 ## Presets
 
-The module creates preset folders in the format:
+The module creates preset folders named after each user:
 
-- `Users/<name>`
+- `<name>`
 
 Each user folder contains:
 
 - one `REPLY` button
 - one button per assigned talk target
+- one `Audio` rotary preset per assigned target
+
+The `Audio` preset:
+
+- uses rotary left/right for `Change target volume`
+- draws the current target volume as a segmented bar on the button
+- keeps the muted target state visible through the red mute feedback
 
 In `User login` mode:
 
@@ -48,6 +55,13 @@ Available feedbacks include:
 - User talk lock
 - User on-air
 - Last command failed
+
+## Variables
+
+Dynamic variables are created for each scoped user target:
+
+- target volume percentage
+- target volume bar
 
 ## Notes
 

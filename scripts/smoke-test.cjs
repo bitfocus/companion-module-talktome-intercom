@@ -105,6 +105,7 @@ async function waitForSocketEvent(socket, eventName, predicate, timeoutMs = 5000
 async function main() {
 	const startedAt = Date.now()
 	let socket = null
+	let appSocket = null
 	let runError = null
 	const resultLines = []
 	const nodeCandidates = []
@@ -432,6 +433,80 @@ async function main() {
 		await targetAudioCommandResultWait
 		resultLines.push('socket command-result event on failed target-audio: ok')
 
+		appSocket = io(baseUrl, {
+			transports: ['websocket'],
+			rejectUnauthorized: false,
+			timeout: 4000,
+		})
+
+		await new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('app socket connect timeout')), 5000)
+			appSocket.once('connect', () => {
+				clearTimeout(timeout)
+				resolve()
+			})
+			appSocket.once('connect_error', (err) => {
+				clearTimeout(timeout)
+				reject(err)
+			})
+		})
+
+		const onlineStateWait = waitForSocketEvent(
+			socket,
+			'user-state',
+			(payload) => Number(payload?.state?.userId) === operatorAId && payload?.state?.online === true,
+		)
+		const registerResponse = await new Promise((resolve, reject) => {
+			appSocket.emit('register-user', { id: operatorAId, name: operatorAName, kind: 'user' }, (resp) => {
+				if (!resp || resp.error) {
+					reject(new Error(`register-user failed: ${resp?.error || 'unknown error'}`))
+					return
+				}
+				resolve(resp)
+			})
+		})
+		assert(registerResponse?.ok === true, 'register-user should acknowledge ok', registerResponse)
+		await onlineStateWait
+		resultLines.push('app socket register-user: ok')
+
+		const expectedVolume = 0.35
+		const targetAudioStateWait = waitForSocketEvent(socket, 'user-state', (payload) => {
+			if (Number(payload?.state?.userId) !== operatorAId) return false
+			const states = Array.isArray(payload?.state?.targetAudioStates) ? payload.state.targetAudioStates : []
+			return states.some(
+				(entry) =>
+					entry?.targetType === 'conference' &&
+					Number(entry?.targetId) === conferenceAId &&
+					Number(entry?.volume) === expectedVolume &&
+					entry?.muted === false,
+			)
+		})
+		appSocket.emit('target-audio-state-snapshot', {
+			reason: 'smoke-volume-state',
+			states: [
+				{
+					targetType: 'conference',
+					targetId: conferenceAId,
+					muted: false,
+					volume: expectedVolume,
+				},
+			],
+		})
+		const targetAudioStatePayload = await targetAudioStateWait
+		const volumeState = Array.isArray(targetAudioStatePayload?.state?.targetAudioStates)
+			? targetAudioStatePayload.state.targetAudioStates.find(
+					(entry) => entry?.targetType === 'conference' && Number(entry?.targetId) === conferenceAId,
+				)
+			: null
+		assert(
+			Number(volumeState?.volume) === expectedVolume,
+			'target audio volume should round-trip to companion socket',
+			{
+				targetAudioStates: targetAudioStatePayload?.state?.targetAudioStates,
+			},
+		)
+		resultLines.push('target-audio-state volume round-trip: ok')
+
 		const durationMs = Date.now() - startedAt
 		console.log(`Smoke test passed in ${durationMs}ms`)
 		for (const line of resultLines) {
@@ -444,6 +519,10 @@ async function main() {
 		if (socket) {
 			socket.removeAllListeners()
 			socket.disconnect()
+		}
+		if (appSocket) {
+			appSocket.removeAllListeners()
+			appSocket.disconnect()
 		}
 
 		server.stdout.off('data', onServerOut)
