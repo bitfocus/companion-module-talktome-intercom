@@ -130,8 +130,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	conferences: Map<number, { id: number; name: string }>
 	feeds: Map<number, { id: number; name: string }>
 	userTargets: Map<number, PresetTarget[]>
-	currentAddressedBy: Map<number, AddressedEntry>
-	lastAddressedBy: Map<number, AddressedEntry>
 	userChoices: ChoiceItem[]
 	conferenceChoices: ChoiceItem[]
 	feedChoices: ChoiceItem[]
@@ -157,8 +155,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.conferences = new Map<number, { id: number; name: string }>()
 		this.feeds = new Map<number, { id: number; name: string }>()
 		this.userTargets = new Map<number, PresetTarget[]>()
-		this.currentAddressedBy = new Map<number, AddressedEntry>()
-		this.lastAddressedBy = new Map<number, AddressedEntry>()
 
 		this.userChoices = [{ id: PLACEHOLDER_USER_ID, label: 'No users available' }]
 		this.conferenceChoices = [{ id: PLACEHOLDER_CONFERENCE_ID, label: 'No conferences available' }]
@@ -471,8 +467,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.conferences.clear()
 			this.feeds.clear()
 			this.userTargets.clear()
-			this.currentAddressedBy.clear()
-			this.lastAddressedBy.clear()
 			this.cutCameraUser = ''
 			this.refreshChoiceCaches()
 			this.refreshDefinitions()
@@ -792,7 +786,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			})
 		}
 
-		this.recomputeAddressingState()
 		this.refreshChoiceCaches()
 		this.refreshDefinitions()
 		this.updateVariableValuesFromState()
@@ -902,7 +895,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		}
 
 		if (changed) {
-			this.recomputeAddressingState()
 			this.refreshDefinitions()
 			this.updateVariableValuesFromState()
 			this.checkFeedbacks(
@@ -948,7 +940,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.mergeUserState(user, raw)
 		this.users.set(userId, user)
 
-		this.recomputeAddressingState()
 		this.refreshChoiceCaches()
 		this.refreshDefinitions()
 		this.updateVariableValuesFromState()
@@ -981,6 +972,8 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			socketId: '',
 			currentTarget: null,
 			lastTarget: null,
+			addressedNow: [],
+			replyTarget: null,
 			targetAudioStates: [],
 			lastSpokeAt: null,
 			updatedAt: null,
@@ -996,11 +989,48 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		target.socketId = asString(raw.socketId)
 		target.currentTarget = this.normalizeStateTarget(raw.currentTarget)
 		target.lastTarget = this.normalizeStateTarget(raw.lastTarget)
+		target.addressedNow = this.normalizeAddressedEntries(raw.addressedNow)
+		target.replyTarget = this.normalizeAddressedEntry(raw.replyTarget)
 		target.lastCommandId = asString(raw.lastCommandId)
 		target.lastCommandResult = asString(raw.lastCommandResult)
 		target.targetAudioStates = this.normalizeTargetAudioStates(raw.targetAudioStates)
 		target.lastSpokeAt = this.normalizeTimestamp(raw.lastSpokeAt)
 		target.updatedAt = this.normalizeTimestamp(raw.updatedAt)
+	}
+
+	normalizeAddressedEntry(rawEntry: unknown): AddressedEntry | null {
+		const raw = (rawEntry ?? {}) as Record<string, unknown>
+		const targetType = asString(raw.targetType).toLowerCase()
+		if (targetType !== 'user' && targetType !== 'conference') return null
+
+		const targetId = Number(raw.targetId)
+		if (!Number.isFinite(targetId)) return null
+
+		const fromUserId = Number(raw.fromUserId)
+
+		return {
+			fromUserId: Number.isFinite(fromUserId) ? fromUserId : 0,
+			fromName: asString(raw.fromName),
+			targetType: targetType as AddressedEntry['targetType'],
+			targetId,
+			at: this.normalizeTimestamp(raw.at) || 0,
+		}
+	}
+
+	normalizeAddressedEntries(rawEntries: unknown): AddressedEntry[] {
+		if (!Array.isArray(rawEntries)) return []
+		const normalized: AddressedEntry[] = []
+		const seen = new Set<string>()
+		for (const rawEntry of rawEntries) {
+			const entry = this.normalizeAddressedEntry(rawEntry)
+			if (!entry) continue
+			const key = `${entry.targetType}:${entry.targetId}`
+			if (seen.has(key)) continue
+			seen.add(key)
+			normalized.push(entry)
+		}
+		normalized.sort((left, right) => Number(right.at || 0) - Number(left.at || 0))
+		return normalized
 	}
 
 	normalizeTargetAudioState(rawState: unknown): TargetAudioState | null {
@@ -1121,7 +1151,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	resolveReplyReferenceTarget(userId: unknown): NormalizedTarget | null {
 		const normalizedUserId = Number(userId)
 		if (!Number.isFinite(normalizedUserId)) return null
-		const addressed = this.currentAddressedBy.get(normalizedUserId) || this.lastAddressedBy.get(normalizedUserId)
+		const addressed = this.users.get(normalizedUserId)?.replyTarget
 		if (!addressed) return null
 		return this.normalizeStateTarget({
 			type: addressed.targetType,
@@ -1171,14 +1201,15 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	isUserAddressedByTargetNow(userId: unknown, targetType: unknown, targetId: unknown): boolean {
 		const normalizedUserId = Number(userId)
 		if (!Number.isFinite(normalizedUserId)) return false
-		const entry = this.currentAddressedBy.get(normalizedUserId)
-		return this.isAddressingEntryMatchingTarget(entry, targetType, targetId)
+		const user = this.users.get(normalizedUserId)
+		if (!user) return false
+		return user.addressedNow.some((entry) => this.isAddressingEntryMatchingTarget(entry, targetType, targetId))
 	}
 
 	hasReplyTarget(userId: unknown): boolean {
 		const normalizedUserId = Number(userId)
 		if (!Number.isFinite(normalizedUserId)) return false
-		return this.currentAddressedBy.has(normalizedUserId) || this.lastAddressedBy.has(normalizedUserId)
+		return Boolean(this.users.get(normalizedUserId)?.replyTarget)
 	}
 
 	resolveReplyLabelForEntry(entry: AddressedEntry | null | undefined, userId: unknown): string {
@@ -1216,11 +1247,8 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const normalizedUserId = Number(userId)
 		if (!Number.isFinite(normalizedUserId)) return ''
 
-		const currentEntry = this.currentAddressedBy.get(normalizedUserId)
-		const lastEntry = this.lastAddressedBy.get(normalizedUserId)
-		const label =
-			this.resolveReplyLabelForEntry(currentEntry, normalizedUserId) ||
-			this.resolveReplyLabelForEntry(lastEntry, normalizedUserId)
+		const replyEntry = this.users.get(normalizedUserId)?.replyTarget
+		const label = this.resolveReplyLabelForEntry(replyEntry, normalizedUserId)
 
 		return label ? `(${label})` : ''
 	}
@@ -1330,112 +1358,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 
 	getTargetVolumeBar(userId: unknown, targetType: unknown, targetId: unknown): string {
 		return formatVolumeBar(this.getTargetVolume(userId, targetType, targetId))
-	}
-
-	resolveAddressedUsersForTarget(target: NormalizedTarget | null, speakerUserId: unknown): number[] {
-		if (!target) return []
-		if (target.type === 'user') {
-			const resolvedTargetUserId = this.resolveUserIdFromTargetId(target.id)
-			if (!Number.isFinite(resolvedTargetUserId) || resolvedTargetUserId === Number(speakerUserId)) return []
-			return [Number(resolvedTargetUserId)]
-		}
-
-		if (target.type === 'conference') {
-			const conferenceId = Number(target.id)
-			if (!Number.isFinite(conferenceId)) return []
-
-			const addressedUsers: number[] = []
-			for (const user of this.users.values()) {
-				const userId = Number(user?.id)
-				if (!Number.isFinite(userId) || userId === Number(speakerUserId)) continue
-				if (this.userHasConferenceTarget(userId, conferenceId)) {
-					addressedUsers.push(userId)
-				}
-			}
-			return addressedUsers
-		}
-
-		return []
-	}
-
-	setAddressedEntry(targetMap: Map<number, AddressedEntry>, targetUserId: number, payload: AddressedEntry): void {
-		const existing = targetMap.get(targetUserId)
-		if (!existing || Number(payload.at) >= Number(existing.at || 0)) {
-			targetMap.set(targetUserId, payload)
-		}
-	}
-
-	buildAddressedEntry(
-		spokenTarget: NormalizedTarget | null,
-		speakerUserId: unknown,
-		fromName: string,
-		at: number,
-	): AddressedEntry | null {
-		const normalizedSpeakerId = Number(speakerUserId)
-		if (!spokenTarget || !Number.isFinite(normalizedSpeakerId)) return null
-
-		if (spokenTarget.type === 'user') {
-			return {
-				fromUserId: normalizedSpeakerId,
-				fromName,
-				targetType: 'user',
-				targetId: normalizedSpeakerId,
-				at,
-			}
-		}
-
-		if (spokenTarget.type === 'conference') {
-			const conferenceId = Number(spokenTarget.id)
-			if (!Number.isFinite(conferenceId)) return null
-			return {
-				fromUserId: normalizedSpeakerId,
-				fromName,
-				targetType: 'conference',
-				targetId: conferenceId,
-				at,
-			}
-		}
-
-		return null
-	}
-
-	recomputeAddressingState(): void {
-		const currentAddressedBy = new Map<number, AddressedEntry>()
-		const lastAddressedBy = new Map<number, AddressedEntry>()
-
-		for (const speaker of this.users.values()) {
-			const speakerUserId = Number(speaker?.id)
-			if (!Number.isFinite(speakerUserId)) continue
-
-			const fromName = asString(speaker?.name) || `User ${speakerUserId}`
-			const nowAt = this.normalizeTimestamp(speaker?.updatedAt) || Date.now()
-			const lastSpokeAt = this.normalizeTimestamp(speaker?.lastSpokeAt) || nowAt
-			const currentTarget = this.normalizeStateTarget(speaker?.currentTarget)
-			const lastTarget = this.normalizeStateTarget(speaker?.lastTarget) || currentTarget
-
-			if (speaker?.talking && currentTarget) {
-				const currentEntry = this.buildAddressedEntry(currentTarget, speakerUserId, fromName, nowAt)
-				if (currentEntry) {
-					const currentUsers = this.resolveAddressedUsersForTarget(currentTarget, speakerUserId)
-					for (const targetUserId of currentUsers) {
-						this.setAddressedEntry(currentAddressedBy, targetUserId, currentEntry)
-					}
-				}
-			}
-
-			if (lastTarget) {
-				const historyEntry = this.buildAddressedEntry(lastTarget, speakerUserId, fromName, lastSpokeAt)
-				if (historyEntry) {
-					const historyUsers = this.resolveAddressedUsersForTarget(lastTarget, speakerUserId)
-					for (const targetUserId of historyUsers) {
-						this.setAddressedEntry(lastAddressedBy, targetUserId, historyEntry)
-					}
-				}
-			}
-		}
-
-		this.currentAddressedBy = currentAddressedBy
-		this.lastAddressedBy = lastAddressedBy
 	}
 
 	applyCommandResult(payload: unknown): void {

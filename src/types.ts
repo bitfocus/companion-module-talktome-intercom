@@ -65,6 +65,8 @@ export interface UserState {
 	socketId: string
 	currentTarget: NormalizedTarget | null
 	lastTarget: NormalizedTarget | null
+	addressedNow: AddressedEntry[]
+	replyTarget: AddressedEntry | null
 	lastCommandId?: string
 	lastCommandResult?: string
 	targetAudioStates: TargetAudioState[]

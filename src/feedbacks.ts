@@ -572,7 +572,7 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 			callback: (feedback) => {
 				const userId = self.resolveChoiceId(feedback.options.userId)
 				if (!userId) return false
-				return self.currentAddressedBy.has(userId)
+				return Boolean(self.users.get(userId)?.addressedNow?.length)
 			},
 		},
 		operator_not_logged_in: {
