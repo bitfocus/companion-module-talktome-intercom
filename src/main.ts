@@ -35,8 +35,6 @@ const FIXED_HTTP_TIMEOUT_MS = 5000
 const FIXED_COMMAND_WAIT_MS = 1500
 const FIXED_VOLUME_STEP = 0.04
 const DEFAULT_TARGET_VOLUME = 0.9
-const TARGET_VOLUME_BAR_SEGMENTS = 10
-
 const DEFAULT_CONFIG: ModuleConfig = {
 	host: 'localhost',
 	port: 443,
@@ -82,13 +80,6 @@ function clampUnitInterval(rawValue: unknown, fallback = 0): number {
 	const value = Number(rawValue)
 	if (!Number.isFinite(value)) return fallback
 	return Math.min(1, Math.max(0, value))
-}
-
-function formatVolumeBar(rawValue: unknown, segments = TARGET_VOLUME_BAR_SEGMENTS): string {
-	const safeSegments = Math.max(1, Math.round(Number(segments) || TARGET_VOLUME_BAR_SEGMENTS))
-	const clamped = clampUnitInterval(rawValue, DEFAULT_TARGET_VOLUME)
-	const filled = Math.round(clamped * safeSegments)
-	return `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, safeSegments - filled))}`
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -1096,24 +1087,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		return `$(${instanceId}:${this.replyFromVariableId(userId)})`
 	}
 
-	targetVolumePercentVariableId(userId: number | string, targetType: string, targetId: number | string): string {
-		return `target_volume_pct_user_${Number(userId)}_${asString(targetType).toLowerCase()}_${Number(targetId)}`
-	}
-
-	targetVolumePercentVariableToken(userId: number | string, targetType: string, targetId: number | string): string {
-		const instanceId = asString(this.id || this.label) || 'talktome'
-		return `$(${instanceId}:${this.targetVolumePercentVariableId(userId, targetType, targetId)})`
-	}
-
-	targetVolumeBarVariableId(userId: number | string, targetType: string, targetId: number | string): string {
-		return `target_volume_bar_user_${Number(userId)}_${asString(targetType).toLowerCase()}_${Number(targetId)}`
-	}
-
-	targetVolumeBarVariableToken(userId: number | string, targetType: string, targetId: number | string): string {
-		const instanceId = asString(this.id || this.label) || 'talktome'
-		return `$(${instanceId}:${this.targetVolumeBarVariableId(userId, targetType, targetId)})`
-	}
-
 	resolveUserIdFromTargetId(rawTargetId: unknown): number | null {
 		const numericId = Number(rawTargetId)
 		if (Number.isFinite(numericId)) return numericId
@@ -1350,14 +1323,6 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			return DEFAULT_TARGET_VOLUME
 		}
 		return clampUnitInterval(state.volume, DEFAULT_TARGET_VOLUME)
-	}
-
-	getTargetVolumePercent(userId: unknown, targetType: unknown, targetId: unknown): number {
-		return Math.round(this.getTargetVolume(userId, targetType, targetId) * 100)
-	}
-
-	getTargetVolumeBar(userId: unknown, targetType: unknown, targetId: unknown): string {
-		return formatVolumeBar(this.getTargetVolume(userId, targetType, targetId))
 	}
 
 	applyCommandResult(payload: unknown): void {

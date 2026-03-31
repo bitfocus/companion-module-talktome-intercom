@@ -7,12 +7,12 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thepoison606/companion-module-talktome-intercom.git"
+    "url": "git+https://github.com/bitfocus/companion-module-talktome-intercom.git"
   },
   "bugs": {
-    "url": "https://github.com/thepoison606/companion-module-talktome-intercom/issues"
+    "url": "https://github.com/bitfocus/companion-module-talktome-intercom/issues"
   },
-  "homepage": "https://github.com/thepoison606/companion-module-talktome-intercom",
+  "homepage": "https://github.com/bitfocus/companion-module-talktome-intercom",
   "engines": {
     "node": "^22.20",
     "yarn": "^4"
