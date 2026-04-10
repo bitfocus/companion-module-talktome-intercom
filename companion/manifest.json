@@ -1,10 +1,10 @@
 {
 	"$schema": "https://raw.githubusercontent.com/bitfocus/companion-module-base/main/schemas/manifest.schema.json",
-	"id": "talktome",
-	"name": "talktome",
+	"id": "talktome-intercom",
+	"name": "talktome-intercom",
 	"shortname": "talktome",
 	"description": "talktome intercom control and feedback module",
-	"version": "0.1.7",
+	"version": "0.1.8",
 	"license": "MIT",
 	"repository": "https://github.com/bitfocus/companion-module-talktome-intercom",
 	"bugs": "https://github.com/bitfocus/companion-module-talktome-intercom/issues",
@@ -13,7 +13,7 @@
 			"name": "Daniel Jocher"
 		}
 	],
-	"legacyIds": ["talktome-intercom"],
+	"legacyIds": ["talktome"],
 	"runtime": {
 		"type": "node22",
 		"api": "nodejs-ipc",
