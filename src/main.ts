@@ -2,6 +2,7 @@ import https from 'node:https'
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios'
 import { io, Socket } from 'socket.io-client'
 import { InstanceBase, InstanceStatus, Regex, combineRgb, runEntrypoint } from '@companion-module/base'
+import type { CompanionActionEvent } from '@companion-module/base'
 import { getConfigFields } from './config.js'
 import { initActions as defineActions } from './actions.js'
 import { initFeedbacks as defineFeedbacks } from './feedbacks.js'
@@ -116,6 +117,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	socket: Socket | null
 	pollTimer: NodeJS.Timeout | null
 	offlineFlashTimer: NodeJS.Timeout | null
+	uiRefreshTimer: NodeJS.Timeout | null
 	reauthPromise: Promise<void> | null
 	users: Map<number, UserState>
 	conferences: Map<number, { id: number; name: string }>
@@ -131,6 +133,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	scopeUserId: number | null
 	scopeUserName: string
 	lastCommand: LastCommandState
+	pendingVariableRefresh: boolean
+	pendingDefinitionRefresh: boolean
+	pendingFeedbackChecks: Set<string>
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -140,6 +145,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.socket = null
 		this.pollTimer = null
 		this.offlineFlashTimer = null
+		this.uiRefreshTimer = null
 		this.reauthPromise = null
 
 		this.users = new Map<number, UserState>()
@@ -166,6 +172,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			targetId: '',
 			at: 0,
 		}
+		this.pendingVariableRefresh = false
+		this.pendingDefinitionRefresh = false
+		this.pendingFeedbackChecks = new Set()
 	}
 
 	async init(config: ModuleConfig, _isFirstInit: boolean, secrets: ModuleSecrets): Promise<void> {
@@ -442,6 +451,14 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.offlineFlashTimer = null
 		}
 
+		if (this.uiRefreshTimer) {
+			clearTimeout(this.uiRefreshTimer)
+			this.uiRefreshTimer = null
+		}
+		this.pendingVariableRefresh = false
+		this.pendingDefinitionRefresh = false
+		this.pendingFeedbackChecks.clear()
+
 		if (this.socket) {
 			this.socket.removeAllListeners()
 			this.socket.disconnect()
@@ -476,6 +493,57 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.log('debug', `Snapshot poll failed: ${companionError.message}`)
 			})
 		}, 10000)
+	}
+
+	scheduleUiRefresh(
+		feedbackIds: string[] = [],
+		{
+			refreshVariables = true,
+			refreshDefinitions = false,
+		}: { refreshVariables?: boolean; refreshDefinitions?: boolean } = {},
+	): void {
+		if (refreshVariables) {
+			this.pendingVariableRefresh = true
+		}
+		if (refreshDefinitions) {
+			this.pendingDefinitionRefresh = true
+		}
+		for (const feedbackId of feedbackIds) {
+			const normalized = asString(feedbackId)
+			if (!normalized) continue
+			this.pendingFeedbackChecks.add(normalized)
+		}
+		if (this.uiRefreshTimer) return
+
+		this.uiRefreshTimer = setTimeout(() => {
+			this.flushScheduledUiRefresh()
+		}, 20)
+	}
+
+	flushScheduledUiRefresh(): void {
+		if (this.uiRefreshTimer) {
+			clearTimeout(this.uiRefreshTimer)
+			this.uiRefreshTimer = null
+		}
+
+		const shouldRefreshDefinitions = this.pendingDefinitionRefresh
+		const shouldRefreshVariables = this.pendingVariableRefresh
+		const feedbackIds = Array.from(this.pendingFeedbackChecks)
+
+		this.pendingDefinitionRefresh = false
+		this.pendingVariableRefresh = false
+		this.pendingFeedbackChecks.clear()
+
+		if (shouldRefreshDefinitions) {
+			this.refreshChoiceCaches()
+			this.refreshDefinitions()
+		}
+		if (shouldRefreshVariables) {
+			this.updateVariableValuesFromState()
+		}
+		if (feedbackIds.length > 0) {
+			this.checkFeedbacks(...feedbackIds)
+		}
 	}
 
 	async apiRequest(method: string, path: string, data?: unknown): Promise<AxiosResponse> {
@@ -720,8 +788,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 
 		this.socket.on('cut-camera', (payload) => {
 			this.cutCameraUser = asString(payload?.user)
-			this.updateVariableValuesFromState()
-			this.checkFeedbacks('user_cut_camera')
+			this.scheduleUiRefresh(['user_cut_camera'])
 		})
 
 		this.socket.on('command-result', (payload) => {
@@ -886,18 +953,19 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		}
 
 		if (changed) {
-			this.refreshDefinitions()
-			this.updateVariableValuesFromState()
-			this.checkFeedbacks(
-				'target_volume_bar',
-				'target_muted',
-				'target_online',
-				'target_offline',
-				'user_talking_target',
-				'user_talking_reply',
-				'target_addressed_now',
-				'reply_available',
-				'user_addressed_now',
+			this.scheduleUiRefresh(
+				[
+					'target_volume_bar',
+					'target_muted',
+					'target_online',
+					'target_offline',
+					'user_talking_target',
+					'user_talking_reply',
+					'target_addressed_now',
+					'reply_available',
+					'user_addressed_now',
+				],
+				{ refreshDefinitions: true },
 			)
 		}
 	}
@@ -927,29 +995,33 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const userId = Number(raw.userId)
 		if (!Number.isFinite(userId)) return
 
-		const user = this.users.get(userId) || this.makeEmptyUserState(userId)
+		const existingUser = this.users.get(userId) || null
+		const user = existingUser || this.makeEmptyUserState(userId)
+		const previousName = existingUser?.name || ''
 		this.mergeUserState(user, raw)
 		this.users.set(userId, user)
 
-		this.refreshChoiceCaches()
-		this.refreshDefinitions()
-		this.updateVariableValuesFromState()
-		this.checkFeedbacks(
-			'module_not_running',
-			'user_online',
-			'user_talking',
-			'user_talking_target',
-			'user_talking_reply',
-			'user_locked',
-			'target_volume_bar',
-			'target_muted',
-			'target_online',
-			'target_offline',
-			'target_addressed_now',
-			'reply_available',
-			'user_addressed_now',
-			'operator_not_logged_in',
-			'user_cut_camera',
+		this.scheduleUiRefresh(
+			[
+				'module_not_running',
+				'user_online',
+				'user_talking',
+				'user_talking_target',
+				'user_talking_reply',
+				'user_locked',
+				'target_volume_bar',
+				'target_muted',
+				'target_online',
+				'target_offline',
+				'target_addressed_now',
+				'reply_available',
+				'user_addressed_now',
+				'operator_not_logged_in',
+				'user_cut_camera',
+			],
+			{
+				refreshDefinitions: !existingUser || previousName !== user.name,
+			},
 		)
 	}
 
@@ -962,7 +1034,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			talkLocked: false,
 			socketId: '',
 			currentTarget: null,
+			currentTargets: [],
 			lastTarget: null,
+			lastTargets: [],
 			addressedNow: [],
 			replyTarget: null,
 			targetAudioStates: [],
@@ -978,8 +1052,14 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		target.talking = Boolean(raw.talking)
 		target.talkLocked = Boolean(raw.talkLocked)
 		target.socketId = asString(raw.socketId)
-		target.currentTarget = this.normalizeStateTarget(raw.currentTarget)
-		target.lastTarget = this.normalizeStateTarget(raw.lastTarget)
+		const currentTarget = this.normalizeStateTarget(raw.currentTarget)
+		const currentTargets = this.normalizeStateTargets(raw.currentTargets)
+		const lastTarget = this.normalizeStateTarget(raw.lastTarget)
+		const lastTargets = this.normalizeStateTargets(raw.lastTargets)
+		target.currentTargets = currentTargets.length > 0 ? currentTargets : currentTarget ? [currentTarget] : []
+		target.currentTarget = target.currentTargets[0] || currentTarget
+		target.lastTargets = lastTargets.length > 0 ? lastTargets : lastTarget ? [lastTarget] : []
+		target.lastTarget = target.lastTargets[0] || lastTarget
 		target.addressedNow = this.normalizeAddressedEntries(raw.addressedNow)
 		target.replyTarget = this.normalizeAddressedEntry(raw.replyTarget)
 		target.lastCommandId = asString(raw.lastCommandId)
@@ -1070,6 +1150,21 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		return { type: type as NormalizedTarget['type'], id }
 	}
 
+	normalizeStateTargets(rawTargets: unknown): NormalizedTarget[] {
+		if (!Array.isArray(rawTargets)) return []
+		const normalizedTargets: NormalizedTarget[] = []
+		const seen = new Set<string>()
+		for (const rawTarget of rawTargets) {
+			const target = this.normalizeStateTarget(rawTarget)
+			if (!target) continue
+			const key = `${target.type}:${target.id}`
+			if (seen.has(key)) continue
+			seen.add(key)
+			normalizedTargets.push(target)
+		}
+		return normalizedTargets
+	}
+
 	normalizeTimestamp(rawValue: unknown): number | null {
 		if (rawValue === null || rawValue === undefined || rawValue === '') return null
 		const numeric = Number(rawValue)
@@ -1132,26 +1227,42 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		})
 	}
 
+	getUserCurrentTargets(userId: unknown): NormalizedTarget[] {
+		const normalizedUserId = Number(userId)
+		if (!Number.isFinite(normalizedUserId)) return []
+		const user = this.users.get(normalizedUserId)
+		if (!user?.talking) return []
+
+		const explicitTargets = this.normalizeStateTargets(user.currentTargets)
+		if (explicitTargets.length > 0) {
+			return explicitTargets
+		}
+
+		const singleTarget = this.normalizeStateTarget(user.currentTarget)
+		return singleTarget ? [singleTarget] : []
+	}
+
 	isUserTalkingToExactTarget(userId: unknown, targetType: unknown, targetId: unknown): boolean {
 		const normalizedUserId = Number(userId)
 		if (!Number.isFinite(normalizedUserId)) return false
-		const user = this.users.get(normalizedUserId)
-		if (!user?.talking) return false
-
-		const currentTarget = this.normalizeStateTarget(user.currentTarget)
 		const expectedTarget = this.normalizeStateTarget({ type: targetType, id: targetId })
-		return this.areTargetsEquivalent(currentTarget, expectedTarget)
+		if (!expectedTarget) return false
+
+		return this.getUserCurrentTargets(normalizedUserId).some((currentTarget) =>
+			this.areTargetsEquivalent(currentTarget, expectedTarget),
+		)
 	}
 
 	isUserTalkingToReply(userId: unknown): boolean {
 		const normalizedUserId = Number(userId)
 		if (!Number.isFinite(normalizedUserId)) return false
-		const user = this.users.get(normalizedUserId)
-		if (!user?.talking) return false
 
-		const currentTarget = this.normalizeStateTarget(user.currentTarget)
 		const replyTarget = this.resolveReplyReferenceTarget(normalizedUserId)
-		return this.areTargetsEquivalent(currentTarget, replyTarget)
+		if (!replyTarget) return false
+
+		return this.getUserCurrentTargets(normalizedUserId).some((currentTarget) =>
+			this.areTargetsEquivalent(currentTarget, replyTarget),
+		)
 	}
 
 	isAddressingEntryMatchingTarget(
@@ -1343,8 +1454,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.applyUserState(raw.state)
 		}
 
-		this.updateVariableValuesFromState()
-		this.checkFeedbacks(
+		this.scheduleUiRefresh([
 			'last_command_failed',
 			'user_talking',
 			'user_talking_target',
@@ -1358,7 +1468,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'reply_available',
 			'user_addressed_now',
 			'operator_not_logged_in',
-		)
+		])
 
 		if (reason === 'Target offline') {
 			this.triggerTargetOfflineFeedbackFlash()
@@ -1404,7 +1514,16 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		return id
 	}
 
-	async executeTalkCommand(options: Record<string, unknown>): Promise<void> {
+	buildCompanionTalkInputKey(actionEvent: CompanionActionEvent | undefined, userId: number): string | null {
+		if (!actionEvent) return null
+		const instanceId = asString(this.id || this.label) || 'talktome'
+		const controlId = asString(actionEvent.controlId)
+		if (!controlId) return null
+		const surfaceId = asString(actionEvent.surfaceId) || 'surface'
+		return `companion:${instanceId}:user:${userId}:surface:${surfaceId}:control:${controlId}`
+	}
+
+	async executeTalkCommand(options: Record<string, unknown>, actionEvent?: CompanionActionEvent): Promise<void> {
 		const userId = this.resolveChoiceId(options.userId)
 		if (!userId) {
 			throw new Error('Invalid user')
@@ -1423,6 +1542,10 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			action,
 			targetType,
 			waitMs,
+		}
+		const inputKey = this.buildCompanionTalkInputKey(actionEvent, userId)
+		if (inputKey) {
+			payload.inputKey = inputKey
 		}
 
 		if (targetType === 'conference') {

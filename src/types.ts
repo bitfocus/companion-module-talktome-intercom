@@ -64,7 +64,9 @@ export interface UserState {
 	talkLocked: boolean
 	socketId: string
 	currentTarget: NormalizedTarget | null
+	currentTargets: NormalizedTarget[]
 	lastTarget: NormalizedTarget | null
+	lastTargets: NormalizedTarget[]
 	addressedNow: AddressedEntry[]
 	replyTarget: AddressedEntry | null
 	lastCommandId?: string
@@ -89,6 +91,7 @@ export interface CommandPayload {
 	targetType: string
 	waitMs: number
 	targetId?: number
+	inputKey?: string
 }
 
 export interface TargetAudioCommandPayload {

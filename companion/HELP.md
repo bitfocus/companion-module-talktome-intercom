@@ -47,6 +47,7 @@ The `Audio` preset:
 - keeps the muted target state visible through the red mute feedback
 - for `conference` and `user` targets, button press/release also sends talk
 - for `feed` targets, the preset is audio-only
+- holding multiple PTT presets at the same time addresses all of their targets in parallel
 
 PTT target presets show target online/offline state, active talk state, mute state and "addressed now".
 

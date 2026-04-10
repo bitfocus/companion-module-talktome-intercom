@@ -110,7 +110,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 			],
 			callback: async (event: CompanionActionEvent) => {
 				try {
-					await self.executeTalkCommand(event.options)
+					await self.executeTalkCommand(event.options, event)
 				} catch (error: unknown) {
 					handleCommandFailure(self, event, error, 'Talk command failed', InstanceStatus, asString)
 				}
