@@ -232,6 +232,18 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 					},
 				)
 				audioFeedbacks.splice(audioFeedbacks.length - 2, 0, {
+					feedbackId: 'target_addressed_now',
+					options: {
+						userId,
+						targetType: target.targetType,
+						targetId: target.targetId,
+					},
+					style: {
+						bgcolor: WEB_COLORS.green,
+						color: WEB_COLORS.greenText,
+					},
+				},
+				{
 					feedbackId: 'user_talking_target',
 					options: {
 						userId,
