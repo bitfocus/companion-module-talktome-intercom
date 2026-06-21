@@ -1,6 +1,9 @@
 import type { CompanionPresetDefinitions, CompanionPresetFeedback } from '@companion-module/base'
 import type { TalkToMeCompanionInstance } from './main.js'
 
+const PRESET_VOLUME_BAR_PNG =
+	'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAARklEQVR42u3QsQ0AIAwDwYzH/nOwg+nTQQXoTnLj8qsAAAAAAAAAAAAAAAAAAAAAYE+S2XfpP/pOfoEEEkgggX4KBAC8bgEFm1uhDD+Z6wAAAABJRU5ErkJggg=='
+
 type PresetDeps = {
 	PLACEHOLDER_CONFERENCE_ID: number
 	PLACEHOLDER_FEED_ID: number
@@ -21,6 +24,13 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 		const defaultConferenceId = self.conferenceChoices[0]?.id ?? PLACEHOLDER_CONFERENCE_ID
 		const userTargets = self.userTargets.get(userId) || []
 
+		presets[`user_${userId}_volume_info`] = {
+			type: 'text',
+			category,
+			name: '',
+			text: 'Buttons with a volume bar support rotary volume control. Turn left or right to adjust the target volume.',
+		}
+
 		presets[`user_${userId}_reply_ptt`] = {
 			type: 'button',
 			category,
@@ -30,6 +40,9 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 				size: '14',
 				color: WEB_COLORS.offlineText,
 				bgcolor: WEB_COLORS.offline,
+			},
+			previewStyle: {
+				text: 'REPLY',
 			},
 			feedbacks: [
 				{
@@ -175,7 +188,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 					style: {
 						bgcolor: WEB_COLORS.offline,
 						color: WEB_COLORS.offlineText,
-						text: 'LOGIN TO CTRL',
+						text: 'LOGIN TO TALK',
 					},
 				},
 				{
@@ -268,6 +281,11 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 					color: WEB_COLORS.offlineText,
 					bgcolor: WEB_COLORS.offline,
 				},
+				previewStyle: {
+					text: targetLabel,
+					png64: PRESET_VOLUME_BAR_PNG,
+					pngalignment: 'center:bottom',
+				},
 				options: {
 					rotaryActions: true,
 				},
@@ -339,6 +357,9 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 					size: '14',
 					color: WEB_COLORS.offlineText,
 					bgcolor: WEB_COLORS.offline,
+				},
+				previewStyle: {
+					text: targetLabel,
 				},
 				feedbacks: [
 					{
