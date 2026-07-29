@@ -73,7 +73,7 @@ function createTargetVolumeBarImage(width: number, height: number, rawVolume: un
 	}
 
 	return {
-		imageBuffer: buffer,
+		imageBuffer: Buffer.from(buffer).toString('base64'),
 		imageBufferEncoding: { pixelFormat: 'RGBA' as const },
 		imageBufferPosition: {
 			x: Math.max(0, Math.floor((safeWidth - barWidth) / 2)),
@@ -311,10 +311,52 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				return self.isTargetMuted(operatorUserId, targetType, targetId)
 			},
 		},
+		target_volume: {
+			type: 'value',
+			name: 'Target volume',
+			description: 'Current target volume from 0 to 1',
+			options: [
+				{
+					type: 'dropdown',
+					id: 'userId',
+					label: 'Operator User',
+					default: defaultUserId,
+					choices: self.userChoices,
+				},
+				{
+					type: 'dropdown',
+					id: 'targetType',
+					label: 'Target Type',
+					default: 'user',
+					choices: [
+						{ id: 'user', label: 'user' },
+						{ id: 'conference', label: 'conference' },
+						{ id: 'feed', label: 'feed' },
+					],
+				},
+				{
+					type: 'number',
+					id: 'targetId',
+					label: 'Target ID',
+					default: defaultUserId,
+					min: 1,
+					max: 100000,
+				},
+			],
+			callback: (feedback) => {
+				const operatorUserId = self.resolveChoiceId(feedback.options.userId)
+				const targetId = self.resolveChoiceId(feedback.options.targetId)
+				if (!operatorUserId || !targetId) return 0
+
+				const targetType = asString(feedback.options.targetType).toLowerCase()
+				return clampUnitInterval(self.getTargetVolume(operatorUserId, targetType, targetId), 0.9)
+			},
+		},
 		target_volume_bar: {
 			type: 'advanced',
 			name: 'Target volume bar',
 			description: 'Draw the current target volume as a segmented bar',
+			affectedProperties: ['imageBuffer'],
 			options: [
 				{
 					type: 'dropdown',
@@ -595,7 +637,8 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 			callback: (feedback) => {
 				const userId = self.resolveChoiceId(feedback.options.userId)
 				if (!userId) return true
-				return !self.users.get(userId)?.online
+				const user = self.users.get(userId)
+				return !user?.online || !asString(user.socketId)
 			},
 		},
 		user_cut_camera: {

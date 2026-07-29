@@ -2,6 +2,15 @@
 
 Control a talktome intercom server from Companion.
 
+## Release notes
+
+### v1.2.0
+
+- Added Companion 5 layered target presets with native volume gauges.
+- Added the talktome muted-speaker icon to muted target presets while preserving their current status color.
+- Updated the module to Companion Module API 2.1.
+- Companion 5 uses the new layered presets with simple preset fallbacks. Older Companion installations remain on the compatible v1.1.1 module release.
+
 ## Connection
 
 Fill in these settings in the module configuration:
@@ -43,13 +52,15 @@ The `REPLY` preset:
 The `Audio` preset:
 
 - uses rotary left/right for `Change target volume`
-- draws the current target volume as a segmented bar on the button
-- keeps the muted target state visible through the red mute feedback
+- draws the current target volume as a native gauge in Companion 5
+- shows the talktome muted-speaker icon while preserving the current target status color
+- retains the segmented volume bar and red mute feedback in the simple preset fallback
 - for `conference` and `user` targets, button press/release also sends talk
 - for `feed` targets, the preset is audio-only
 - holding multiple PTT presets at the same time addresses all of their targets in parallel
 
-PTT target presets show target online/offline state, active talk state, mute state and "addressed now".
+PTT target presets show target online/offline state, active talk state, mute state and "addressed now". In Companion 5,
+the mute state uses the same muted-speaker icon as the `Audio` preset.
 
 ## Feedback
 
@@ -64,6 +75,7 @@ Available feedbacks include:
 - Reply available
 - User talk lock
 - Target muted
+- Target volume
 - Target volume bar
 - Target online
 - Target offline

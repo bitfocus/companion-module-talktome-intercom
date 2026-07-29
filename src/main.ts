@@ -1,8 +1,8 @@
 import https from 'node:https'
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios'
 import { io, Socket } from 'socket.io-client'
-import { InstanceBase, InstanceStatus, Regex, combineRgb, runEntrypoint } from '@companion-module/base'
-import type { CompanionActionEvent } from '@companion-module/base'
+import { InstanceBase, InstanceStatus, Regex, combineRgb } from '@companion-module/base'
+import type { CompanionActionEvent, InstanceTypes } from '@companion-module/base'
 import { getConfigFields } from './config.js'
 import { initActions as defineActions } from './actions.js'
 import { initFeedbacks as defineFeedbacks } from './feedbacks.js'
@@ -89,7 +89,7 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 
 function toCompanionError(error: unknown): CompanionError {
-	if (error instanceof Error) return error as CompanionError
+	if (error instanceof Error) return error
 
 	const raw = asObject(error)
 	const fallbackMessage = asString(raw.message) || asString(error) || 'Unknown error'
@@ -111,7 +111,15 @@ function toCompanionError(error: unknown): CompanionError {
 	return wrapped
 }
 
-export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, ModuleSecrets> {
+export type ModuleSchema = {
+	config: ModuleConfig
+	secrets: ModuleSecrets
+	actions: InstanceTypes['actions']
+	feedbacks: InstanceTypes['feedbacks']
+	variables: InstanceTypes['variables']
+}
+
+export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	config: ModuleConfig
 	http: AxiosInstance | null
 	socket: Socket | null
@@ -191,7 +199,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.connectionState = 'disconnected'
 		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
 		this.updateVariableValuesFromState()
-		this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+		this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 		await this.cleanup({ keepState: false })
 	}
 
@@ -390,7 +398,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		if (!this.hasRequiredConfig()) {
 			this.connectionState = 'bad_config'
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 			this.updateStatus(InstanceStatus.BadConfig, 'Host and authentication fields are required')
 			return
 		}
@@ -411,14 +419,14 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 					this.updateStatus(InstanceStatus.ConnectionFailure, companionError.message)
 				}
 				this.updateVariableValuesFromState()
-				this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+				this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 			}
 		}
 
 		if (this.connectionState === 'disconnected') {
 			this.connectionState = 'connecting'
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 			this.updateStatus(InstanceStatus.Connecting, 'Connecting to talktome ...')
 		}
 
@@ -439,7 +447,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		this.connectionState = 'disconnected'
 		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
 		this.updateVariableValuesFromState()
-		this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+		this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 
 		if (this.pollTimer) {
 			clearInterval(this.pollTimer)
@@ -542,7 +550,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.updateVariableValuesFromState()
 		}
 		if (feedbackIds.length > 0) {
-			this.checkFeedbacks(...feedbackIds)
+			this.checkFeedbacks(feedbackIds[0], ...feedbackIds.slice(1))
 		}
 	}
 
@@ -675,7 +683,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.connectionState = 'connected'
 				this.updateStatus(InstanceStatus.Ok)
 				this.updateVariableValuesFromState()
-				this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+				this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 				this.ensureRealtimeConnection()
 			}
 		} catch (error) {
@@ -688,7 +696,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.updateStatus(InstanceStatus.ConnectionFailure, companionError.message)
 			}
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 
 			if (reason !== 'poll') {
 				this.log('error', `Snapshot request failed: ${companionError.message}`)
@@ -722,7 +730,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.connectionState = 'connected'
 			this.updateStatus(InstanceStatus.Ok)
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 			this.socket?.emit('request-snapshot')
 		})
 
@@ -730,7 +738,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			this.connectionState = 'disconnected'
 			this.updateStatus(InstanceStatus.Disconnected, reason || 'Socket disconnected')
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 		})
 
 		this.socket.on('connect_error', (error) => {
@@ -754,7 +762,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				this.updateStatus(InstanceStatus.ConnectionFailure, message)
 			}
 			this.updateVariableValuesFromState()
-			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume_bar')
+			this.checkFeedbacks('connection_ok', 'module_not_running', 'target_volume', 'target_volume_bar')
 		})
 
 		this.socket.on('snapshot', (snapshot) => {
@@ -855,6 +863,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_volume',
 			'target_volume_bar',
 			'target_muted',
 			'target_online',
@@ -877,7 +886,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		if (!Number.isFinite(targetId)) return null
 
 		return {
-			targetType: targetType as PresetTarget['targetType'],
+			targetType,
 			targetId,
 			name: asString(raw.name) || `${targetType} ${targetId}`,
 		}
@@ -955,6 +964,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		if (changed) {
 			this.scheduleUiRefresh(
 				[
+					'target_volume',
 					'target_volume_bar',
 					'target_muted',
 					'target_online',
@@ -1009,6 +1019,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 				'user_talking_target',
 				'user_talking_reply',
 				'user_locked',
+				'target_volume',
 				'target_volume_bar',
 				'target_muted',
 				'target_online',
@@ -1082,7 +1093,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		return {
 			fromUserId: Number.isFinite(fromUserId) ? fromUserId : 0,
 			fromName: asString(raw.fromName),
-			targetType: targetType as AddressedEntry['targetType'],
+			targetType,
 			targetId,
 			at: this.normalizeTimestamp(raw.at) || 0,
 		}
@@ -1116,7 +1127,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const volume = Number.isFinite(rawVolume) ? clampUnitInterval(rawVolume) : null
 
 		return {
-			targetType: targetType as TargetAudioState['targetType'],
+			targetType,
 			targetId,
 			muted: Boolean(raw.muted),
 			volume,
@@ -1147,7 +1158,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const numericId = Number(rawId)
 		const id = Number.isFinite(numericId) ? numericId : asString(rawId)
 		if (id === '') return null
-		return { type: type as NormalizedTarget['type'], id }
+		return { type, id }
 	}
 
 	normalizeStateTargets(rawTargets: unknown): NormalizedTarget[] {
@@ -1460,6 +1471,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 			'user_talking_target',
 			'user_talking_reply',
 			'user_locked',
+			'target_volume',
 			'target_volume_bar',
 			'target_muted',
 			'target_online',
@@ -1626,7 +1638,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 		const action = asString(options.action) || 'volume-up'
 		const targetType = asString(options.targetType).toLowerCase() || 'conference'
 
-		let targetId: number | null = null
+		let targetId: number | null
 		if (targetType === 'conference') {
 			targetId = this.resolveChoiceId(options.targetConferenceId)
 			if (!targetId) {
@@ -1648,7 +1660,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 
 		const payload: TargetAudioCommandPayload = {
 			action,
-			targetType: targetType as TargetAudioCommandPayload['targetType'],
+			targetType,
 			targetId,
 		}
 
@@ -1800,6 +1812,5 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleConfig, Module
 	}
 }
 
-runEntrypoint(TalkToMeCompanionInstance, UpgradeScripts)
-
-export {}
+export { UpgradeScripts }
+export default TalkToMeCompanionInstance

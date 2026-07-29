@@ -1,17 +1,14 @@
+import type { JsonObject } from '@companion-module/base'
+
 export type AuthMode = 'apiKey' | 'credentials'
 export type ScopeMode = 'all' | 'self'
 export type ConnectionState =
-	| 'disconnected'
-	| 'bad_config'
-	| 'auth_failure'
-	| 'connection_failure'
-	| 'connecting'
-	| 'connected'
+	'disconnected' | 'bad_config' | 'auth_failure' | 'connection_failure' | 'connecting' | 'connected'
 
 export type TargetType = 'user' | 'conference'
 export type AudioTargetType = 'user' | 'conference' | 'feed'
 
-export interface ModuleConfig {
+export interface ModuleConfig extends JsonObject {
 	host: string
 	port: number
 	allowSelfSigned: boolean
@@ -21,7 +18,7 @@ export interface ModuleConfig {
 	password: string
 }
 
-export interface ModuleSecrets {
+export interface ModuleSecrets extends JsonObject {
 	password: string
 }
 

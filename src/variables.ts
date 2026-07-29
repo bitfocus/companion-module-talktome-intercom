@@ -6,16 +6,15 @@ type VariableDeps = {
 
 export function initVariableDefinitions(self: TalkToMeCompanionInstance, deps: VariableDeps): void {
 	const { asString } = deps
-	const definitions = []
+	const definitions: Record<string, { name: string }> = {}
 
 	for (const user of self.getScopedUsers()) {
 		const userId = Number(user?.id)
 		if (!Number.isFinite(userId)) continue
 		const userName = asString(user?.name) || `User ${userId}`
-		definitions.push({
-			variableId: self.replyFromVariableId(userId),
+		definitions[self.replyFromVariableId(userId)] = {
 			name: `reply from (${userName})`,
-		})
+		}
 	}
 
 	self.setVariableDefinitions(definitions)

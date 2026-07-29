@@ -32,7 +32,6 @@ export function getConfigFields({ DEFAULT_CONFIG, Regex }: ConfigDeps): SomeComp
 			label: 'Server Host',
 			width: 6,
 			default: DEFAULT_CONFIG.host,
-			required: true,
 			regex: Regex.HOSTNAME,
 		},
 		{
@@ -57,7 +56,6 @@ export function getConfigFields({ DEFAULT_CONFIG, Regex }: ConfigDeps): SomeComp
 			label: 'API Key',
 			width: 12,
 			default: '',
-			required: false,
 			isVisibleExpression: "$(options:authMode) == 'apiKey'",
 		},
 		{
@@ -66,7 +64,6 @@ export function getConfigFields({ DEFAULT_CONFIG, Regex }: ConfigDeps): SomeComp
 			label: 'User Name',
 			width: 6,
 			default: '',
-			required: false,
 			isVisibleExpression: "$(options:authMode) == 'credentials'",
 		},
 		{
@@ -75,7 +72,6 @@ export function getConfigFields({ DEFAULT_CONFIG, Regex }: ConfigDeps): SomeComp
 			label: 'Password',
 			width: 6,
 			default: '',
-			required: false,
 			isVisibleExpression: "$(options:authMode) == 'credentials'",
 		},
 	]
