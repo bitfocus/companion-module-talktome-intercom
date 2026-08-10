@@ -4,6 +4,11 @@ Control a talktome intercom server from Companion.
 
 ## Release notes
 
+### v1.2.1
+
+- Preset previews keep their target labels and volume gauges visible while users are logged out, targets are offline, or the module is disconnected.
+- Layered target labels now shrink to remain on one line instead of wrapping a single trailing character onto a second line.
+
 ### v1.2.0
 
 - Added Companion 5 layered target presets with native volume gauges.

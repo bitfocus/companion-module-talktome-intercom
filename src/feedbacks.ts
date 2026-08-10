@@ -18,6 +18,13 @@ function clampUnitInterval(rawValue: unknown, fallback = 0): number {
 	return Math.min(1, Math.max(0, value))
 }
 
+// Layered presets have no previewStyle equivalent. Companion identifies its
+// temporary preset-preview controls with this prefix, which lets us preserve
+// neutral labels and volume gauges without changing real button feedbacks.
+function isPresetPreview(controlId: string): boolean {
+	return controlId.startsWith('preset:')
+}
+
 function fillRect(
 	buffer: Uint8Array,
 	bufferWidth: number,
@@ -109,7 +116,7 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				text: 'NO\\nCONNECTION',
 			},
 			options: [],
-			callback: () => self.connectionState !== 'connected',
+			callback: (feedback) => !isPresetPreview(feedback.controlId) && self.connectionState !== 'connected',
 		},
 		user_online: {
 			type: 'boolean',
@@ -490,6 +497,8 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				},
 			],
 			callback: (feedback) => {
+				if (isPresetPreview(feedback.controlId)) return false
+
 				const operatorUserId = self.resolveChoiceId(feedback.options.userId)
 				if (!operatorUserId) return false
 
@@ -579,6 +588,8 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				},
 			],
 			callback: (feedback) => {
+				if (isPresetPreview(feedback.controlId)) return false
+
 				const userId = self.resolveChoiceId(feedback.options.userId)
 				if (!userId) return false
 				if (asString(self.lastCommand.reason) !== 'Target offline') return false
@@ -635,6 +646,8 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				},
 			],
 			callback: (feedback) => {
+				if (isPresetPreview(feedback.controlId)) return false
+
 				const userId = self.resolveChoiceId(feedback.options.userId)
 				if (!userId) return true
 				const user = self.users.get(userId)

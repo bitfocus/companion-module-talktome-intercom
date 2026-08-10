@@ -15,6 +15,11 @@ const AUDIO_BACKGROUND_ELEMENT_ID = 'audio_background'
 const AUDIO_LABEL_ELEMENT_ID = 'audio_label'
 const AUDIO_GAUGE_ELEMENT_ID = 'audio_gauge'
 const AUDIO_MUTED_ICON_ELEMENT_ID = 'audio_muted_icon'
+// A shallow text box makes Companion's auto-shrink choose a smaller one-line
+// label before it can accept an awkward one-character second line.
+const TARGET_LABEL_Y = 35
+const TARGET_LABEL_HEIGHT = 30
+const TARGET_LABEL_FONT_SIZE = 100
 
 type PresetDeps = {
 	PLACEHOLDER_CONFERENCE_ID: number
@@ -449,11 +454,11 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 						name: 'Target',
 						type: 'text' as const,
 						x: 2,
-						y: 0,
+						y: TARGET_LABEL_Y,
 						width: 96,
-						height: 100,
+						height: TARGET_LABEL_HEIGHT,
 						text: targetLabel,
-						fontsize: 29.4,
+						fontsize: TARGET_LABEL_FONT_SIZE,
 						fontsizeAllowShrink: true,
 						color: WEB_COLORS.offlineText,
 						halign: 'center' as const,
@@ -698,11 +703,11 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 						name: 'Target',
 						type: 'text' as const,
 						x: 2,
-						y: 0,
+						y: TARGET_LABEL_Y,
 						width: 96,
-						height: 100,
+						height: TARGET_LABEL_HEIGHT,
 						text: targetLabel,
-						fontsize: 29.4,
+						fontsize: TARGET_LABEL_FONT_SIZE,
 						fontsizeAllowShrink: true,
 						color: WEB_COLORS.offlineText,
 						halign: 'center' as const,
