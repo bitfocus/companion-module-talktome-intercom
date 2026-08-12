@@ -4,6 +4,11 @@ Control a talktome intercom server from Companion.
 
 ## Release notes
 
+### v1.2.2
+
+- Target actions now show only the destination field relevant to the selected target type.
+- Fixed volume, mute and talk actions being skipped by Companion 5 when an unused dynamic target field contained an unavailable value.
+
 ### v1.2.1
 
 - Preset previews keep their target labels and volume gauges visible while users are logged out, targets are offline, or the module is disconnected.

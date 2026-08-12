@@ -85,6 +85,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					id: 'targetType',
 					label: 'Target Type',
 					default: 'conference',
+					disableAutoExpression: true,
 					choices: [
 						{ id: 'conference', label: 'conference' },
 						{ id: 'user', label: 'user' },
@@ -97,6 +98,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Conference',
 					default: defaultConferenceId,
 					choices: self.conferenceChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'conference'",
 				},
 				{
@@ -105,6 +107,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Target User',
 					default: defaultUserId,
 					choices: self.userChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'user'",
 				},
 			],
@@ -141,6 +144,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					id: 'targetType',
 					label: 'Target Type',
 					default: 'conference',
+					disableAutoExpression: true,
 					choices: [
 						{ id: 'conference', label: 'conference' },
 						{ id: 'user', label: 'user' },
@@ -153,6 +157,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Conference',
 					default: defaultConferenceId,
 					choices: self.conferenceChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'conference'",
 				},
 				{
@@ -161,6 +166,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Target User',
 					default: defaultUserId,
 					choices: self.userChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'user'",
 				},
 				{
@@ -169,6 +175,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Feed',
 					default: defaultFeedId,
 					choices: self.feedChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'feed'",
 				},
 			],
@@ -195,6 +202,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					id: 'targetType',
 					label: 'Target Type',
 					default: 'conference',
+					disableAutoExpression: true,
 					choices: [
 						{ id: 'conference', label: 'conference' },
 						{ id: 'user', label: 'user' },
@@ -207,6 +215,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Conference',
 					default: defaultConferenceId,
 					choices: self.conferenceChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'conference'",
 				},
 				{
@@ -215,6 +224,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Target User',
 					default: defaultUserId,
 					choices: self.userChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'user'",
 				},
 				{
@@ -223,6 +233,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					label: 'Feed',
 					default: defaultFeedId,
 					choices: self.feedChoices,
+					allowInvalidValues: true,
 					isVisibleExpression: "$(options:targetType) == 'feed'",
 				},
 			],
@@ -245,6 +256,7 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					id: 'action',
 					label: 'Action',
 					default: 'set',
+					disableAutoExpression: true,
 					choices: [
 						{ id: 'set', label: 'set user' },
 						{ id: 'clear', label: 'clear' },

@@ -1,6 +1,6 @@
 {
   "name": "companion-module-talktome-intercom",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "main": "dist/main.js",
   "description": "Bitfocus Companion module for talktome",
   "license": "MIT",
