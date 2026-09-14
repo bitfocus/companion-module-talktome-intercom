@@ -41,6 +41,19 @@ Fill in these settings in the module configuration:
 
 In `User login` mode, the visible users and generated presets depend on the scope returned by the talktome server for that account.
 
+## Productions
+
+The `Production` setting applies to the complete Companion module instance. Users, conferences, feeds, target assignments, presets, actions, feedbacks, realtime state and tally are all loaded and controlled in that Production context.
+
+- To control several Productions at the same time, create one Companion connection per Production.
+- Save valid server and authentication settings first, then reopen the module configuration to load the available Productions.
+- With `API key` authentication, all enabled Productions are available.
+- With `User login` authentication, only Productions assigned to that user are available, and the module can control only that user's scope.
+- `Primary production` means that Companion sends no explicit Production ID. With an API key, the server resolves this to its primary Production. With a user login, it uses the primary Production when the user is a member, otherwise the user's first assigned Production. It does not combine or control all Productions.
+- When Multiple Productions is disabled in talktome, the server always uses the primary Production and the module only offers `Primary production`. The Production-aware API and separate PGM/PRV tally buses remain compatible.
+- PGM and PRV tally are independent and scoped to the selected Production. Setting or clearing one bus affects only that bus in that Production.
+- A conference is one global audio room even when it is assigned to several Productions, so participants in the same conference can hear each other across Production boundaries. Companion still lists and controls that conference through the selected Production context.
+
 ## Actions
 
 - `Send talk command` (`press`, `release`, or `lock-toggle`)
