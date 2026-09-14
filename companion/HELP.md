@@ -4,6 +4,12 @@ Control a talktome intercom server from Companion.
 
 ## Release notes
 
+### v1.3.0
+
+- Added Production selection for production-scoped users, targets, realtime state and tally.
+- Added separate PGM (red) and PRV (green) tally actions and feedbacks.
+- Existing tally actions without a bus selection continue to use PGM.
+
 ### v1.2.2
 
 - Target actions now show only the destination field relevant to the selected target type.
@@ -28,6 +34,7 @@ Fill in these settings in the module configuration:
 - `Server Host`
 - `Server Port`
 - `Allow self-signed TLS`
+- `Production`: select the Production controlled by this module instance. Save a valid connection first, then reopen the configuration to load the available Productions. `Primary production` remains compatible with servers that have Multiple Productions disabled.
 - `Authentication`
   - `API key`: enter the server `API Key`
   - `User login`: enter `User Name` and `Password`
@@ -39,7 +46,7 @@ In `User login` mode, the visible users and generated presets depend on the scop
 - `Send talk command` (`press`, `release`, or `lock-toggle`)
 - `Change target volume`
 - `Mute target`
-- `Send tally`
+- `Send tally` (`PGM` red or `PRV` green; set or clear)
 
 ## Presets
 
@@ -93,7 +100,8 @@ Available feedbacks include:
 - Last pressed target offline
 - User is being addressed (now)
 - User not logged in
-- User on-air (cut-camera)
+- User on PGM (red tally)
+- User on PRV (green tally)
 - Last command failed
 
 ## Variables

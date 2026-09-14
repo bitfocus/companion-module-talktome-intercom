@@ -656,7 +656,7 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 		},
 		user_cut_camera: {
 			type: 'boolean',
-			name: 'User on-air (cut-camera)',
+			name: 'User on PGM (red tally)',
 			defaultStyle: {
 				bgcolor: combineRgb(140, 0, 0),
 				color: combineRgb(255, 255, 255),
@@ -675,6 +675,29 @@ export function initFeedbacks(self: TalkToMeCompanionInstance, deps: FeedbackDep
 				if (!userId) return false
 				const user = self.users.get(userId)
 				return Boolean(user?.name && self.cutCameraUser && user.name === self.cutCameraUser)
+			},
+		},
+		user_preview_camera: {
+			type: 'boolean',
+			name: 'User on PRV (green tally)',
+			defaultStyle: {
+				bgcolor: combineRgb(0, 140, 55),
+				color: combineRgb(255, 255, 255),
+			},
+			options: [
+				{
+					type: 'dropdown',
+					id: 'userId',
+					label: 'User',
+					default: defaultUserId,
+					choices: self.userChoices,
+				},
+			],
+			callback: (feedback) => {
+				const userId = self.resolveChoiceId(feedback.options.userId)
+				if (!userId) return false
+				const user = self.users.get(userId)
+				return Boolean(user?.name && self.previewCameraUser && user.name === self.previewCameraUser)
 			},
 		},
 		last_command_failed: {

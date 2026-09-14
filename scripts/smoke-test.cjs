@@ -193,11 +193,14 @@ async function main() {
 		})
 		assert(configResponse.status === 200, 'expected /companion/config with API key to return 200')
 		assert(configResponse.data?.scope?.mode === 'all', 'expected API key scope mode "all"', configResponse.data)
+		const productionId = Number(configResponse.data?.productions?.[0]?.id)
+		const hasMultipleProductions = Number.isFinite(productionId)
+		const productionQuery = hasMultipleProductions ? `?productionId=${productionId}` : ''
 		resultLines.push('api key auth + scope(all): ok')
 
 		const adminLogin = await http.post('/admin/login', {
 			name: 'admin',
-			password: 'admin',
+			password: 'talktom3',
 		})
 		assert(adminLogin.status === 200, 'admin login failed', {
 			status: adminLogin.status,
@@ -249,10 +252,30 @@ async function main() {
 		assert(conferenceB.status === 200, 'create conference B failed', conferenceB.data)
 		const conferenceBId = Number(conferenceB.data?.id)
 		assert(Number.isFinite(conferenceBId), 'conference B id missing', conferenceB.data)
+		if (hasMultipleProductions) {
+			for (const userId of [operatorAId, operatorBId]) {
+				const membership = await http.put(
+					`/admin/productions/${productionId}/users/${userId}`,
+					{},
+					{ headers: { Cookie: adminCookie } },
+				)
+				assert(membership.status === 204, 'production user membership failed', membership.data)
+			}
+			for (const conferenceId of [conferenceAId, conferenceBId]) {
+				const membership = await http.put(
+					`/admin/productions/${productionId}/conferences/${conferenceId}`,
+					{},
+					{ headers: { Cookie: adminCookie } },
+				)
+				assert(membership.status === 204, 'production conference membership failed', membership.data)
+			}
+		}
 		resultLines.push('admin create users/conferences: ok')
 
 		const addUserTarget = await http.post(
-			`/users/${operatorAId}/targets`,
+			hasMultipleProductions
+				? `/admin/productions/${productionId}/users/${operatorAId}/targets`
+				: `/users/${operatorAId}/targets`,
 			{ targetType: 'user', targetId: operatorBId },
 			{ headers: { Cookie: adminCookie } },
 		)
@@ -262,7 +285,9 @@ async function main() {
 		})
 
 		const addConferenceTarget = await http.post(
-			`/users/${operatorAId}/targets`,
+			hasMultipleProductions
+				? `/admin/productions/${productionId}/users/${operatorAId}/targets`
+				: `/users/${operatorAId}/targets`,
 			{ targetType: 'conference', targetId: conferenceAId },
 			{ headers: { Cookie: adminCookie } },
 		)
@@ -290,7 +315,7 @@ async function main() {
 		)
 		resultLines.push('operator login scope(self): ok')
 
-		const operatorUsers = await http.get('/api/v1/companion/users', {
+		const operatorUsers = await http.get(`/api/v1/companion/users${productionQuery}`, {
 			headers: { authorization: `Bearer ${operatorToken}` },
 		})
 		assert(operatorUsers.status === 200, 'operator users request failed')
@@ -301,7 +326,7 @@ async function main() {
 			operatorUsers.data,
 		)
 
-		const operatorState = await http.get('/api/v1/companion/state', {
+		const operatorState = await http.get(`/api/v1/companion/state${productionQuery}`, {
 			headers: { authorization: `Bearer ${operatorToken}` },
 		})
 		assert(operatorState.status === 200, 'operator state request failed')
@@ -313,7 +338,7 @@ async function main() {
 		)
 		resultLines.push('operator scoped state/users: ok')
 
-		const operatorTargets = await http.get(`/api/v1/companion/users/${operatorAId}/targets`, {
+		const operatorTargets = await http.get(`/api/v1/companion/users/${operatorAId}/targets${productionQuery}`, {
 			headers: { authorization: `Bearer ${operatorToken}` },
 		})
 		assert(operatorTargets.status === 200, 'operator targets request failed')
@@ -330,7 +355,7 @@ async function main() {
 		socket = io(`${baseUrl}/companion`, {
 			transports: ['websocket'],
 			rejectUnauthorized: false,
-			auth: { apiKey },
+			auth: { apiKey, ...(hasMultipleProductions ? { productionId } : {}) },
 			extraHeaders: { 'x-api-key': apiKey },
 			timeout: 4000,
 		})
@@ -361,7 +386,9 @@ async function main() {
 			(payload) => Number(payload?.userId) === operatorAId,
 		)
 		const addConferenceTarget2 = await http.post(
-			`/users/${operatorAId}/targets`,
+			hasMultipleProductions
+				? `/admin/productions/${productionId}/users/${operatorAId}/targets`
+				: `/users/${operatorAId}/targets`,
 			{ targetType: 'conference', targetId: conferenceBId },
 			{ headers: { Cookie: adminCookie } },
 		)
@@ -369,11 +396,32 @@ async function main() {
 		await userTargetsUpdatedWait
 		resultLines.push('socket user-targets-updated event: ok')
 
-		const cutCameraWait = waitForSocketEvent(socket, 'cut-camera', (payload) => payload?.user === operatorAName)
-		const cutCameraResponse = await http.post('/cut-camera', { user: operatorAName })
-		assert(cutCameraResponse.status === 200, 'cut-camera request failed', cutCameraResponse.data)
-		await cutCameraWait
-		resultLines.push('socket cut-camera event: ok')
+		const pgmTallyWait = waitForSocketEvent(
+			socket,
+			'cut-camera',
+			(payload) => payload?.bus === 'pgm' && payload?.pgmUser === operatorAName,
+		)
+		const pgmTallyResponse = await http.post('/cut-camera', {
+			user: operatorAName,
+			bus: 'pgm',
+			...(hasMultipleProductions ? { productionId } : {}),
+		})
+		assert(pgmTallyResponse.status === 200, 'PGM tally request failed', pgmTallyResponse.data)
+		await pgmTallyWait
+
+		const prvTallyWait = waitForSocketEvent(
+			socket,
+			'cut-camera',
+			(payload) => payload?.bus === 'prv' && payload?.prvUser === operatorAName,
+		)
+		const prvTallyResponse = await http.post('/cut-camera', {
+			user: operatorAName,
+			bus: 'prv',
+			...(hasMultipleProductions ? { productionId } : {}),
+		})
+		assert(prvTallyResponse.status === 200, 'PRV tally request failed', prvTallyResponse.data)
+		await prvTallyWait
+		resultLines.push('socket PGM + PRV tally events: ok')
 
 		const commandResultWait = waitForSocketEvent(
 			socket,
@@ -528,11 +576,11 @@ async function main() {
 		server.stdout.off('data', onServerOut)
 		server.stderr.off('data', onServerOut)
 
-		if (!server.killed) {
+		if (server.exitCode === null && server.signalCode === null) {
 			server.kill('SIGTERM')
 		}
 		await Promise.race([new Promise((resolve) => server.once('exit', resolve)), wait(5000)])
-		if (!server.killed) {
+		if (server.exitCode === null && server.signalCode === null) {
 			server.kill('SIGKILL')
 		}
 

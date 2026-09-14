@@ -44,6 +44,7 @@ const DEFAULT_CONFIG: ModuleConfig = {
 	apiKey: '',
 	username: '',
 	password: '',
+	productionId: '',
 }
 
 const WEB_COLORS = {
@@ -134,7 +135,10 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	userChoices: ChoiceItem[]
 	conferenceChoices: ChoiceItem[]
 	feedChoices: ChoiceItem[]
+	productionChoices: Array<{ id: string; label: string }>
 	cutCameraUser: string
+	previewCameraUser: string
+	supportsTallyBuses: boolean
 	connectionState: ConnectionState
 	authToken: string
 	scopeMode: ScopeMode
@@ -164,8 +168,11 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		this.userChoices = [{ id: PLACEHOLDER_USER_ID, label: 'No users available' }]
 		this.conferenceChoices = [{ id: PLACEHOLDER_CONFERENCE_ID, label: 'No conferences available' }]
 		this.feedChoices = [{ id: PLACEHOLDER_FEED_ID, label: 'No feeds available' }]
+		this.productionChoices = [{ id: '', label: 'Primary production' }]
 
 		this.cutCameraUser = ''
+		this.previewCameraUser = ''
+		this.supportsTallyBuses = false
 		this.connectionState = 'disconnected'
 		this.authToken = ''
 		this.scopeMode = 'all'
@@ -224,11 +231,12 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			apiKey: asString(safeConfig.apiKey),
 			username: asString(safeConfig.username),
 			password: asString(safeSecrets.password || safeConfig.password),
+			productionId: asString(safeConfig.productionId),
 		}
 	}
 
 	getConfigFields() {
-		return getConfigFields({ DEFAULT_CONFIG, Regex })
+		return getConfigFields({ DEFAULT_CONFIG, Regex, productionChoices: this.productionChoices })
 	}
 
 	hasRequiredConfig(): boolean {
@@ -431,6 +439,12 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		}
 
 		if (hasInitialAuth) {
+			try {
+				await this.refreshServerConfig()
+			} catch (error) {
+				const companionError = toCompanionError(error)
+				this.log('debug', `Production list refresh failed: ${companionError.message}`)
+			}
 			this.ensureRealtimeConnection()
 		}
 		this.startPoller()
@@ -484,6 +498,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			this.feeds.clear()
 			this.userTargets.clear()
 			this.cutCameraUser = ''
+			this.previewCameraUser = ''
+			this.supportsTallyBuses = false
+			this.productionChoices = [{ id: '', label: 'Primary production' }]
 			this.refreshChoiceCaches()
 			this.refreshDefinitions()
 		}
@@ -636,11 +653,30 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		return this.reauthPromise
 	}
 
-	getSocketAuthPayload(): { token: string } | { apiKey: string } {
+	getSocketAuthPayload(): Record<string, string> {
+		const productionId = asString(this.config.productionId)
 		if (this.usesCredentialAuth()) {
-			return { token: this.authToken }
+			return { token: this.authToken, ...(productionId ? { productionId } : {}) }
 		}
-		return { apiKey: this.config.apiKey }
+		return { apiKey: this.config.apiKey, ...(productionId ? { productionId } : {}) }
+	}
+
+	withProductionQuery(path: string): string {
+		const productionId = asString(this.config.productionId)
+		if (!productionId) return path
+		return `${path}${path.includes('?') ? '&' : '?'}productionId=${encodeURIComponent(productionId)}`
+	}
+
+	async refreshServerConfig(): Promise<void> {
+		const response = await this.apiRequest('GET', '/api/v1/companion/config')
+		const rows = Array.isArray(response.data?.productions) ? response.data.productions : []
+		const choices = [{ id: '', label: 'Primary production' }]
+		for (const row of rows) {
+			const id = asString(row?.id)
+			if (!id) continue
+			choices.push({ id, label: asString(row?.name) || `Production ${id}` })
+		}
+		this.productionChoices = choices
 	}
 
 	applySocketAuthContext(): void {
@@ -676,7 +712,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 				await this.refreshCredentialSession()
 			}
 
-			const response = await this.apiRequest('GET', '/api/v1/companion/state')
+			const response = await this.apiRequest('GET', this.withProductionQuery('/api/v1/companion/state'))
 			this.applySnapshot(response.data)
 			await this.refreshTargetsForAllUsers()
 			if (!this.socket?.connected) {
@@ -795,8 +831,19 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		})
 
 		this.socket.on('cut-camera', (payload) => {
-			this.cutCameraUser = asString(payload?.user)
-			this.scheduleUiRefresh(['user_cut_camera'])
+			const rawPayload = asObject(payload)
+			const bus = asString(rawPayload.bus).toLowerCase()
+			if ('pgmUser' in rawPayload) {
+				this.cutCameraUser = asString(rawPayload.pgmUser)
+			} else if (!bus || bus === 'pgm') {
+				this.cutCameraUser = asString(rawPayload.user)
+			}
+			if ('prvUser' in rawPayload) {
+				this.previewCameraUser = asString(rawPayload.prvUser)
+			} else if (bus === 'prv') {
+				this.previewCameraUser = asString(rawPayload.user)
+			}
+			this.scheduleUiRefresh(['user_cut_camera', 'user_preview_camera'])
 		})
 
 		this.socket.on('command-result', (payload) => {
@@ -816,6 +863,8 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		this.feeds.clear()
 
 		this.cutCameraUser = asString(rawSnapshot.cutCameraUser)
+		this.previewCameraUser = asString(rawSnapshot.previewCameraUser || asObject(rawSnapshot.tally).prvUser)
+		this.supportsTallyBuses = 'tally' in rawSnapshot || 'previewCameraUser' in rawSnapshot
 
 		const users = Array.isArray(rawSnapshot.users) ? rawSnapshot.users : []
 		for (const row of users) {
@@ -873,6 +922,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			'user_addressed_now',
 			'operator_not_logged_in',
 			'user_cut_camera',
+			'user_preview_camera',
 			'last_command_failed',
 		)
 	}
@@ -911,7 +961,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	}
 
 	async fetchTargetsForUser(userId: number): Promise<PresetTarget[]> {
-		const response = await this.apiRequest('GET', `/api/v1/companion/users/${userId}/targets`)
+		const response = await this.apiRequest('GET', this.withProductionQuery(`/api/v1/companion/users/${userId}/targets`))
 		const rawTargets = Array.isArray(response.data) ? response.data : []
 		const normalizedTargets: PresetTarget[] = []
 		for (const row of rawTargets) {
@@ -1029,6 +1079,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 				'user_addressed_now',
 				'operator_not_logged_in',
 				'user_cut_camera',
+				'user_preview_camera',
 			],
 			{
 				refreshDefinitions: !existingUser || previousName !== user.name,
@@ -1721,6 +1772,10 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 
 	async executeTallyCommand(options: Record<string, unknown>): Promise<void> {
 		const action = asString(options.action).toLowerCase() || 'set'
+		const bus = asString(options.bus).toLowerCase() === 'prv' ? 'prv' : 'pgm'
+		if (bus === 'prv' && !this.supportsTallyBuses) {
+			throw new Error('The connected talktome server does not support PRV tally')
+		}
 		let targetUserId: number | null = null
 		let targetUserName = ''
 
@@ -1747,6 +1802,8 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		try {
 			response = await this.apiRequest('POST', '/cut-camera', {
 				user: targetUserName,
+				bus,
+				...(asString(this.config.productionId) ? { productionId: this.config.productionId } : {}),
 			})
 		} catch (error) {
 			throw toCompanionError(error)
@@ -1760,7 +1817,14 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			throw error
 		}
 
-		this.cutCameraUser = asString(response.data?.user)
+		const responseData = asObject(response.data)
+		this.cutCameraUser =
+			'pgmUser' in responseData
+				? asString(responseData.pgmUser)
+				: bus === 'pgm'
+					? asString(responseData.user)
+					: this.cutCameraUser
+		this.previewCameraUser = 'prvUser' in responseData ? asString(responseData.prvUser) : this.previewCameraUser
 		this.lastCommand = {
 			commandId: '',
 			status: 'ok',
@@ -1771,7 +1835,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			at: Date.now(),
 		}
 		this.updateVariableValuesFromState()
-		this.checkFeedbacks('last_command_failed', 'user_cut_camera')
+		this.checkFeedbacks('last_command_failed', 'user_cut_camera', 'user_preview_camera')
 	}
 
 	initActions() {

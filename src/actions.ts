@@ -253,6 +253,16 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 			options: [
 				{
 					type: 'dropdown',
+					id: 'bus',
+					label: 'Tally',
+					default: 'pgm',
+					choices: [
+						{ id: 'pgm', label: 'PGM (red)' },
+						{ id: 'prv', label: 'PRV (green)' },
+					],
+				},
+				{
+					type: 'dropdown',
 					id: 'action',
 					label: 'Action',
 					default: 'set',

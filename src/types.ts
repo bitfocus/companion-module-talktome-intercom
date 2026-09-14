@@ -16,6 +16,7 @@ export interface ModuleConfig extends JsonObject {
 	apiKey: string
 	username: string
 	password: string
+	productionId: string
 }
 
 export interface ModuleSecrets extends JsonObject {

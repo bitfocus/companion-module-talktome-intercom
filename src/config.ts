@@ -4,9 +4,10 @@ import type { ModuleConfig } from './types.js'
 type ConfigDeps = {
 	DEFAULT_CONFIG: ModuleConfig
 	Regex: { HOSTNAME: string }
+	productionChoices: Array<{ id: string; label: string }>
 }
 
-export function getConfigFields({ DEFAULT_CONFIG, Regex }: ConfigDeps): SomeCompanionConfigField[] {
+export function getConfigFields({ DEFAULT_CONFIG, Regex, productionChoices }: ConfigDeps): SomeCompanionConfigField[] {
 	return [
 		{
 			type: 'static-text',
@@ -49,6 +50,15 @@ export function getConfigFields({ DEFAULT_CONFIG, Regex }: ConfigDeps): SomeComp
 			label: 'Allow self-signed TLS',
 			width: 6,
 			default: DEFAULT_CONFIG.allowSelfSigned,
+		},
+		{
+			type: 'dropdown',
+			id: 'productionId',
+			label: 'Production',
+			width: 6,
+			default: DEFAULT_CONFIG.productionId,
+			choices: productionChoices,
+			allowCustom: true,
 		},
 		{
 			type: 'textinput',
