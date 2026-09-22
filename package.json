@@ -1,6 +1,6 @@
 {
   "name": "companion-module-talktome-intercom",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "main": "dist/main.js",
   "description": "Bitfocus Companion module for talktome",
   "license": "MIT",
@@ -24,7 +24,8 @@
     "dev": "tsc -p tsconfig.build.json --watch",
     "lint": "eslint .",
     "check": "tsc -p tsconfig.json --noEmit",
-    "smoke": "node scripts/smoke-test.cjs"
+    "smoke": "node scripts/smoke-test.cjs",
+    "test": "yarn build && node --test scripts/upgrades.test.cjs"
   },
   "dependencies": {
     "@companion-module/base": "~2.1.2",

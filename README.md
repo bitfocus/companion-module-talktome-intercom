@@ -9,6 +9,7 @@ yarn install
 yarn check
 yarn build
 yarn lint
+yarn test
 ```
 
 Smoke test against a local talktome app repo:

@@ -4,11 +4,12 @@ Control a talktome intercom server from Companion.
 
 ## Release notes
 
-### v1.3.0
+### v1.3.1
 
 - Added Production selection for production-scoped users, targets, realtime state and tally.
 - Added separate PGM (red) and PRV (green) tally actions and feedbacks.
-- Existing tally actions without a bus selection continue to use PGM.
+- Existing connections are automatically upgraded to `Primary production`, and existing tally actions without a bus selection are upgraded to PGM. Explicit selections are preserved.
+- Saved authentication settings and passwords are unchanged by this update.
 
 ### v1.2.2
 
