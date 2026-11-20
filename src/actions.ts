@@ -93,6 +93,13 @@ export function initActions(self: TalkToMeCompanionInstance, deps: ActionDeps): 
 					],
 				},
 				{
+					type: 'checkbox',
+					id: 'tapToLock',
+					label: 'Allow Tap to lock (uses the Talktome user setting)',
+					default: false,
+					isVisibleExpression: "$(options:action) != 'lock-toggle'",
+				},
+				{
 					type: 'dropdown',
 					id: 'targetConferenceId',
 					label: 'Conference',

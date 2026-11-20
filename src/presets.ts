@@ -195,6 +195,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 							options: {
 								userId,
 								action: 'press',
+								tapToLock: true,
 								targetType: 'reply',
 								targetConferenceId: defaultConferenceId,
 								targetUserId: userId,
@@ -207,6 +208,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 							options: {
 								userId,
 								action: 'release',
+								tapToLock: true,
 								targetType: 'reply',
 								targetConferenceId: defaultConferenceId,
 								targetUserId: userId,
@@ -382,6 +384,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 									options: {
 										...talkCommandOptions,
 										action: 'press',
+										tapToLock: true,
 									},
 								},
 							]
@@ -393,6 +396,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 									options: {
 										...talkCommandOptions,
 										action: 'release',
+										tapToLock: true,
 									},
 								},
 							]
@@ -654,6 +658,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 							options: {
 								...commandOptions,
 								action: 'press',
+								tapToLock: true,
 							},
 						},
 					],
@@ -663,6 +668,7 @@ export function initPresets(self: TalkToMeCompanionInstance, deps: PresetDeps): 
 							options: {
 								...commandOptions,
 								action: 'release',
+								tapToLock: true,
 							},
 						},
 					],

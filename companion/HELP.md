@@ -74,6 +74,8 @@ Each user folder contains:
 - one PTT button per assigned `conference` or `user` target
 - one `Audio` rotary preset per assigned `conference`, `user`, or `feed` target
 
+Tap a talk preset for less than 300 ms to lock or unlock talk. Longer presses remain momentary. This requires a Talktome server with **Tap to lock** support and uses the operator's setting. For existing buttons, reinsert the preset or enable **Allow Tap to lock** on both talk actions.
+
 The `REPLY` preset:
 
 - shows the current reply source on the button

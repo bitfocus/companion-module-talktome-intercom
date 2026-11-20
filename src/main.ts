@@ -11,6 +11,7 @@ import {
 	updateVariableValuesFromState as updateVariablesFromState,
 } from './variables.js'
 import { initPresets as definePresets } from './presets.js'
+import { PresetPtt } from './presetPtt.js'
 import { UpgradeScripts } from './upgrades.js'
 import type {
 	AddressedEntry,
@@ -148,6 +149,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	pendingVariableRefresh: boolean
 	pendingDefinitionRefresh: boolean
 	pendingFeedbackChecks: Set<string>
+	private readonly presetPtt = new PresetPtt()
+	private connectionAttempt = new AbortController()
+	private connectionTask = Promise.resolve()
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -199,10 +203,13 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		this.initFeedbacks()
 		this.initPresets()
 		this.updateVariableValuesFromState()
-		await this.reconnect()
+		this.scheduleReconnect(this.config)
 	}
 
 	async destroy(): Promise<void> {
+		this.connectionAttempt.abort()
+		this.presetPtt.reset()
+		await this.connectionTask
 		this.connectionState = 'disconnected'
 		this.updateStatus(InstanceStatus.Disconnected, 'Connection stopped')
 		this.updateVariableValuesFromState()
@@ -211,8 +218,26 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	}
 
 	async configUpdated(config: ModuleConfig, secrets: ModuleSecrets): Promise<void> {
-		this.config = this.applyConfigDefaults(config, secrets)
-		await this.reconnect()
+		this.scheduleReconnect(this.applyConfigDefaults(config, secrets))
+	}
+
+	private scheduleReconnect(config: ModuleConfig): void {
+		this.connectionAttempt.abort()
+		this.presetPtt.reset()
+		const attempt = new AbortController()
+		this.connectionAttempt = attempt
+		// Companion's init acknowledgement must finish even when HTTP requests time out.
+		this.connectionTask = this.connectionTask
+			.then(async () => {
+				if (attempt.signal.aborted) return
+				this.config = config
+				await this.reconnect(attempt.signal)
+			})
+			.catch((error) => {
+				if (!attempt.signal.aborted) {
+					this.updateStatus(InstanceStatus.ConnectionFailure, toCompanionError(error).message)
+				}
+			})
 	}
 
 	applyConfigDefaults(
@@ -385,6 +410,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	createHttpClient(): void {
 		const axiosConfig: AxiosRequestConfig = {
 			baseURL: this.buildBaseUrl(),
+			signal: this.connectionAttempt.signal,
 			timeout: FIXED_HTTP_TIMEOUT_MS,
 			validateStatus: () => true,
 		}
@@ -396,8 +422,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 		this.http = axios.create(axiosConfig)
 	}
 
-	async reconnect(): Promise<void> {
+	async reconnect(signal: AbortSignal): Promise<void> {
 		await this.cleanup({ keepState: true })
+		if (signal.aborted) return
 		this.resetAuthContext()
 		this.refreshChoiceCaches()
 		this.refreshDefinitions()
@@ -418,6 +445,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 				await this.authenticateWithCredentials()
 				hasInitialAuth = true
 			} catch (error) {
+				if (signal.aborted) return
 				const companionError = toCompanionError(error)
 				if (companionError.authFailure) {
 					this.connectionState = 'auth_failure'
@@ -431,6 +459,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			}
 		}
 
+		if (signal.aborted) return
 		if (this.connectionState === 'disconnected') {
 			this.connectionState = 'connecting'
 			this.updateVariableValuesFromState()
@@ -443,8 +472,9 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 				await this.refreshServerConfig()
 			} catch (error) {
 				const companionError = toCompanionError(error)
-				this.log('debug', `Production list refresh failed: ${companionError.message}`)
+				if (!signal.aborted) this.log('debug', `Production list refresh failed: ${companionError.message}`)
 			}
+			if (signal.aborted) return
 			this.ensureRealtimeConnection()
 		}
 		this.startPoller()
@@ -453,7 +483,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			await this.refreshSnapshot('startup')
 		} catch (error) {
 			const companionError = toCompanionError(error)
-			this.log('debug', `Initial startup snapshot failed: ${companionError.message}`)
+			if (!signal.aborted) this.log('debug', `Initial startup snapshot failed: ${companionError.message}`)
 		}
 	}
 
@@ -707,14 +737,17 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 	}
 
 	async refreshSnapshot(reason: string): Promise<void> {
+		const { signal } = this.connectionAttempt
 		try {
 			if (this.usesCredentialAuth() && !this.authToken) {
 				await this.refreshCredentialSession()
 			}
 
 			const response = await this.apiRequest('GET', this.withProductionQuery('/api/v1/companion/state'))
+			if (signal.aborted) return
 			this.applySnapshot(response.data)
 			await this.refreshTargetsForAllUsers()
+			if (signal.aborted) return
 			if (!this.socket?.connected) {
 				this.connectionState = 'connected'
 				this.updateStatus(InstanceStatus.Ok)
@@ -723,6 +756,7 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 				this.ensureRealtimeConnection()
 			}
 		} catch (error) {
+			if (signal.aborted) return
 			const companionError = toCompanionError(error)
 			if (companionError.authFailure) {
 				this.connectionState = 'auth_failure'
@@ -1625,6 +1659,17 @@ export class TalkToMeCompanionInstance extends InstanceBase<ModuleSchema> {
 			payload.targetId = targetUserId
 		}
 
+		if (inputKey && options.tapToLock === true && (action === 'press' || action === 'release')) {
+			const presetKey = JSON.stringify([inputKey, targetType, payload.targetId])
+			return this.presetPtt.run(presetKey, action, async (tapToLock) =>
+				this.sendTalkCommand(userId, { ...payload, tapToLock }),
+			)
+		}
+		await this.sendTalkCommand(userId, payload)
+	}
+
+	private async sendTalkCommand(userId: number, payload: CommandPayload): Promise<void> {
+		const { targetType } = payload
 		let response: AxiosResponse
 		try {
 			response = await this.apiRequest('POST', `/api/v1/companion/users/${userId}/talk`, payload)

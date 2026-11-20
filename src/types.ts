@@ -90,6 +90,7 @@ export interface CommandPayload {
 	waitMs: number
 	targetId?: number
 	inputKey?: string
+	tapToLock?: boolean
 }
 
 export interface TargetAudioCommandPayload {
